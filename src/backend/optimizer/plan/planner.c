@@ -8963,25 +8963,11 @@ create_partial_unique_paths(PlannerInfo *root, RelOptInfo *input_rel,
 
 /*
  * Choose a unique name for some subroot.
- *
- * Modifies glob->subplanNames to track names already used.
  */
 char *
 choose_plan_name(PlannerGlobal *glob, const char *name, bool always_number)
 {
 	unsigned	n;
-
-#ifdef USE_ASSERT_CHECKING
-	Assert(list_length(glob->allroots) == list_length(glob->subplanNames) + 1);
-	foreach_ptr(char, subplan_name, glob->subplanNames)
-	{
-		PlannerInfo *subroot;
-
-		subroot = list_nth(glob->allroots,
-						   foreach_current_index(subplan_name) + 1);
-		Assert(strcmp(subroot->plan_name, subplan_name) == 0);
-	}
-#endif
 
 	/*
 	 * If a numeric suffix is not required, then search the list of
@@ -9007,7 +8993,6 @@ choose_plan_name(PlannerGlobal *glob, const char *name, bool always_number)
 			/* pstrdup here is just to avoid cast-away-const */
 			char	   *chosen_name = pstrdup(name);
 
-			glob->subplanNames = lappend(glob->subplanNames, chosen_name);
 			return chosen_name;
 		}
 	}
@@ -9033,10 +9018,7 @@ choose_plan_name(PlannerGlobal *glob, const char *name, bool always_number)
 		}
 
 		if (!found)
-		{
-			glob->subplanNames = lappend(glob->subplanNames, proposed_name);
 			return proposed_name;
-		}
 
 		pfree(proposed_name);
 	}
