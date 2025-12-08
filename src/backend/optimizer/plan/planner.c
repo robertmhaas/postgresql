@@ -745,6 +745,9 @@ subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
 		root->wt_param_id = -1;
 	root->non_recursive_path = NULL;
 
+	/* Add this PlanenrInfo to the PlannerGlobal's list */
+	remember_plannerinfo(root);
+
 	/*
 	 * Create the top-level join domain.  This won't have valid contents until
 	 * deconstruct_jointree fills it in, but the node needs to exist before
@@ -8968,6 +8971,18 @@ choose_plan_name(PlannerGlobal *glob, const char *name, bool always_number)
 {
 	unsigned	n;
 
+#ifdef USE_ASSERT_CHECKING
+	Assert(list_length(glob->allroots) == list_length(glob->subplanNames) + 1);
+	foreach_ptr(char, subplan_name, glob->subplanNames)
+	{
+		PlannerInfo *subroot;
+
+		subroot = list_nth(glob->allroots,
+						   foreach_current_index(subplan_name) + 1);
+		Assert(strcmp(subroot->plan_name, subplan_name) == 0);
+	}
+#endif
+
 	/*
 	 * If a numeric suffix is not required, then search the list of
 	 * previously-assigned names for a match. If none is found, then we can
@@ -8977,9 +8992,10 @@ choose_plan_name(PlannerGlobal *glob, const char *name, bool always_number)
 	{
 		bool		found = false;
 
-		foreach_ptr(char, subplan_name, glob->subplanNames)
+		foreach_ptr(PlannerInfo, subroot, glob->allroots)
 		{
-			if (strcmp(subplan_name, name) == 0)
+			if (subroot->plan_name != NULL &&
+				strcmp(subroot->plan_name, name) == 0)
 			{
 				found = true;
 				break;
@@ -9006,9 +9022,10 @@ choose_plan_name(PlannerGlobal *glob, const char *name, bool always_number)
 		char	   *proposed_name = psprintf("%s_%u", name, n);
 		bool		found = false;
 
-		foreach_ptr(char, subplan_name, glob->subplanNames)
+		foreach_ptr(PlannerInfo, subroot, glob->allroots)
 		{
-			if (strcmp(subplan_name, proposed_name) == 0)
+			if (subroot->plan_name != NULL &&
+				strcmp(subroot->plan_name, proposed_name) == 0)
 			{
 				found = true;
 				break;
@@ -9023,4 +9040,29 @@ choose_plan_name(PlannerGlobal *glob, const char *name, bool always_number)
 
 		pfree(proposed_name);
 	}
+}
+
+/*
+ * Add a new PlannerInfo to the PlannerGlobal's list of all subroots.
+ */
+void
+remember_plannerinfo(PlannerInfo *newroot)
+{
+	PlannerGlobal *glob = newroot->glob;
+
+#ifdef USE_ASSERT_CHECKING
+	/* Only the first PlannerInfo should be nameless. */
+	Assert(newroot->plan_name != NULL || glob->allroots == NIL);
+
+	/* PlannerInfo names should not be duplicated. */
+	foreach_node(PlannerInfo, root, glob->allroots)
+	{
+		if (root->plan_name == NULL)
+			continue;
+		Assert(strcmp(root->plan_name, newroot->plan_name) != 0);
+	}
+#endif
+
+	/* Add new PlannerInfo to list. */
+	glob->allroots = lappend(glob->allroots, newroot);
 }

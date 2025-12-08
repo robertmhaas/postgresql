@@ -110,6 +110,9 @@ typedef struct PlannerGlobal
 	/* PlannerInfos for SubPlan nodes */
 	List	   *subroots pg_node_attr(read_write_ignore);
 
+	/* every non-transient PlannerInfo (superset of subroots) */
+	List	   *allroots pg_node_attr(read_write_ignore);
+
 	/* names already used for subplans (list of C strings) */
 	List	   *subplanNames pg_node_attr(read_write_ignore);
 

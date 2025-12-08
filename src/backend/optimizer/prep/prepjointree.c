@@ -1350,6 +1350,13 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	/*
 	 * Create a PlannerInfo data structure for this subquery.
 	 *
+	 * Unlike subquery_planner, the subroot we create here is only transient.
+	 * It inherits properties such as the query_level, plan_name, and
+	 * parent_root from the supplied root, rather than becoming a new query
+	 * level. Whether we succeed or fail in pulling up the subquery, this
+	 * subroot won't survive long-term and shouldn't be linked into any
+	 * long-lived planner data structures.
+	 *
 	 * NOTE: the next few steps should match the first processing in
 	 * subquery_planner().  Can we refactor to avoid code duplication, or
 	 * would that just make things uglier?

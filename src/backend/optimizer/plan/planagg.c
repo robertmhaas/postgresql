@@ -341,6 +341,7 @@ build_minmax_path(PlannerInfo *root, MinMaxAggInfo *mminfo,
 	subroot->query_level++;
 	subroot->parent_root = root;
 	subroot->plan_name = choose_plan_name(root->glob, "minmax", true);
+	remember_plannerinfo(subroot);
 
 	/* reset subplan-related stuff */
 	subroot->plan_params = NIL;

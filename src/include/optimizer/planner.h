@@ -82,5 +82,6 @@ extern RelOptInfo *create_unique_paths(PlannerInfo *root, RelOptInfo *rel,
 
 extern char *choose_plan_name(PlannerGlobal *glob, const char *name,
 							  bool always_number);
+extern void remember_plannerinfo(PlannerInfo *newroot);
 
 #endif							/* PLANNER_H */
