@@ -374,8 +374,16 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 				 * still alive, then "unreserved" seems more appropriate.
 				 *
 				 * If we do change it, save the state for safe_wal_size below.
+				 *
+				 * As an exception to the above, if the slot has actually been
+				 * invalidated, we always want the state to be reported as
+				 * "lost". Invalidated slots are ignored by code such as
+				 * ReplicationSlotsComputeRequiredXmin and
+				 * ReplicationSlotsComputeLogicalRestartLSN, so calling them
+				 * merely "unreserved" seems wrong.
 				 */
-				if (XLogRecPtrIsValid(slot_contents.data.restart_lsn))
+				if (slot_contents.data.invalidated == RS_INVAL_NONE &&
+					XLogRecPtrIsValid(slot_contents.data.restart_lsn))
 				{
 					int			pid;
 
