@@ -103,6 +103,7 @@ tests += {
       't/020_pg_receivewal.pl',
       't/030_pg_recvlogical.pl',
       't/040_pg_createsubscriber.pl',
+      't/050_incremental_backup_truncation_block.pl',
     ],
   },
 }
