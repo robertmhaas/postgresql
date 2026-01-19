@@ -1,5 +1,7 @@
-# Test case for a scenario where truncation_block is miscalculated
-# during an incremental backup
+# Copyright (c) 2025-2026, PostgreSQL Global Development Group
+#
+# This test aims to validate that the calculated truncation block never exceeds
+# the segment size.
 
 use strict;
 use warnings FATAL => 'all';
@@ -10,7 +12,6 @@ use Test::More;
 # Initialize primary node
 my $primary = PostgreSQL::Test::Cluster->new('primary');
 $primary->init(has_archiving => 1, allows_streaming => 1);
-# Enable WAL summarization to support incremental backup
 $primary->append_conf('postgresql.conf', 'summarize_wal = on');
 $primary->start;
 
@@ -18,40 +19,21 @@ $primary->start;
 my $backup_path = $primary->backup_dir;
 my $full_backup = "$backup_path/full";
 
-# While fixing the issue with the truncation of the main fork,
-# we discovered another bug in the incremental backup.
-# When WAL summaries are processed, the incremental backup code
-# incorrectly assumes that truncation of the main fork also applies to
-# the VM fork. As a result, after restore, the VM fork file can end up
-# with an incorrect size.
-#
-# At the time of writing, it was decided to postpone fixing the VM fork
-# issue and proceed only with the fix for the main fork truncation.
-#
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# Some test platforms are constrained by disk space, so creating a
-# 1GB VM fork file is not possible there.
-# Other platforms configure the segment size to six blocks,
-# which means that only on those platforms this test actually tests the
-# problematic code path.
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-#
-# Therefore, the test is written to produce a relation that spans more
-# than one segment but remains small on most systems. We first create
-# enough pages to exceed a single segment, then remove rows to make
-# truncation possible.
-my $segment_size_blocks = 6;
+# To avoid using up lots of disk space in the CI/buildfarm environment, this
+# test will only find the issue when run with a small RELSEG_SIZE. As of this
+# writing, one of the CI runs is configured using --with-segsize-blocks=6, and
+# we aim to have this test check for the issue only in that configuration.
+my $target_blocks = 6;
 my $block_size = $primary->safe_psql('postgres',
 	"SELECT current_setting('block_size')::int;");
 
-# Two blocks will be located in the second segment, and one block
-#  will still stay there after truncation.
-my $target_rows = int($segment_size_blocks + 2);
+# We'll have two blocks more than the target number of blocks (one will
+# survive the subsequent truncation).
+my $target_rows = int($target_blocks + 2);
 my $rows_after_truncation = int($target_rows - 1);
 
-# Create a test table.
-# STORAGE PLAIN prevents compression and TOASTing of repetitive data,
-#  ensuring predictable row sizes.
+# Create a test table. STORAGE PLAIN prevents compression and TOASTing of
+# repetitive data, ensuring predictable row sizes.
 $primary->safe_psql(
 	'postgres', q{
     CREATE TABLE t (
@@ -60,10 +42,9 @@ $primary->safe_psql(
     );
 });
 
-# The tuple size should be enough to prevent two tuples
-#  from being on the same page.
-# Since the template string has a length of 32 bytes,
-#  it's enough to repeat it (block_size / (2*32)) times.
+# The tuple size should be enough to prevent two tuples from being on the same
+# page. Since the template string has a length of 32 bytes, it's enough to
+# repeat it (block_size / (2*32)) times.
 $primary->safe_psql(
 	'postgres',
 	"INSERT INTO t
@@ -72,49 +53,38 @@ $primary->safe_psql(
     FROM generate_series(1, $target_rows) i;"
 );
 
-# This step is required because at this moment,
-#  tuples do not have hint bits set.
-# Later (for example, soon after the base backup is created), a background
-#  process may set hint bits on many tuples and change many heap pages.
-# Because of this, the WAL summary may show that too many pages were changed
-#  and create a full file copy instead of an incremental one, which makes the
-#  issue non-reproducible.
+# Make sure hint bits are set.
 $primary->safe_psql('postgres', 'VACUUM t;');
 
-# Verify that relation spans more than one physical storage segment
+# Verify that the relation is as large as was desired.
 my $t_blocks = $primary->safe_psql('postgres',
 	"SELECT pg_relation_size('t') / current_setting('block_size')::int;");
-cmp_ok($t_blocks, '>', $segment_size_blocks,
-	'Relation spans more than one physical segment.');
+cmp_ok($t_blocks, '>', $target_blocks, 'target block size exceeded');
 
 # Take a full base backup
 $primary->backup('full');
 
-# Delete rows at the logical end of the table.
-# This creates removable empty pages at the tail
+# Delete rows at the logical end of the table, creating removable pages.
 $primary->safe_psql('postgres',
 	"DELETE FROM t WHERE id > ($rows_after_truncation);");
 
-# Although TRUNCATE is enabled by default,
-# here it emphasizes the expected behavior of the operation.
+# VACUUM the table. TRUNCATE is enabled by default, and is just mentioned here
+# for emphasis.
 $primary->safe_psql('postgres', 'VACUUM (TRUNCATE) t;');
 
-# Verify that after VACUUM relation is truncated but still spans more than one
-# physical storage segment.
+# Verify expected length after truncation.
 $t_blocks = $primary->safe_psql('postgres',
 	"SELECT pg_relation_size('t') / current_setting('block_size')::int;");
-is($t_blocks, $rows_after_truncation, 'Relation has expected size.');
-cmp_ok($t_blocks, '>', $segment_size_blocks,
-	'Relation spans more than one physical segment.');
+is($t_blocks, $rows_after_truncation, 'post-truncation row count as expected');
+cmp_ok($t_blocks, '>', $target_blocks,
+	'post-truncation block count as expected');
 
 # Take an incremental backup based on the full backup manifest
 $primary->backup('incr',
 	backup_options => [ '--incremental', "$full_backup/backup_manifest" ]);
 
-# Combine full and incremental backups.
-# This step must correctly handle truncated relation segments.
-# Before the fix, this failed because the INCREMENTAL file header
-# contained an incorrect truncation_block value.
+# Combine full and incremental backups.  Before the fix, this failed because
+# the INCREMENTAL file header contained an incorrect truncation_block value.
 my $restored = PostgreSQL::Test::Cluster->new('node2');
 $restored->init_from_backup($primary, 'incr', combine_with_prior => ['full']);
 $restored->start();
