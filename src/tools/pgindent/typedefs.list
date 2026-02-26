@@ -3988,6 +3988,12 @@ pg_uuid_t
 pg_wchar
 pg_wchar_tbl
 pgp_armor_headers_state
+pgca_collected_advice
+pgca_local_advice
+pgca_local_advice_chunk
+pgca_shared_advice
+pgca_shared_advice_chunk
+pgca_shared_state
 pgpa_advice_item
 pgpa_advice_tag_type
 pgpa_advice_target
