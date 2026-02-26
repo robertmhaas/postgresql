@@ -1,0 +1,244 @@
+<!-- doc/src/sgml/pgcollectadvice.sgml -->
+
+<sect1 id="pgcollectadvice" xreflabel="pg_collect_advice">
+ <title>pg_collect_advice &mdash; collect queries and their plan advice strings</title>
+
+ <indexterm zone="pgcollectadvice">
+  <primary>pg_collect_advice</primary>
+ </indexterm>
+
+ <para>
+  The <filename>pg_collect_advice</filename> extension allows you to
+  automatically generate plan advice each time a query is planned and store
+  the query and the generated advice string either in local or shared memory.
+  Note that this extension requires the <xref linkend="pgplanadvice" /> module,
+  which performs the actual plan advice generation; this module only knows
+  how to store the generated advice for later examination. Whenever
+  <literal>pg_collect_advice</literal> is loaded, it will automatically load
+  <literal>pg_plan_advice</literal>.
+ </para>
+
+ <para>
+  In order to use this module, you will need to execute
+  <literal>CREATE EXTENSION pg_collect_advice</literal> in at least
+  one database, so that you have a way to examine the collected advice.
+  You will also need the <literal>pg_collect_advice</literal> module
+  to be loaded in all sessions where advice is to be collected. It will
+  usually be best to do this by adding <literal>pg_collect_advice</literal>
+  to <xref linkend="guc-shared-preload-libraries"/> and restarting the
+  server.
+ </para>
+
+ <para>
+  <literal>pg_collect_advice</literal> includes both a shared advice
+  collector and a local advice collector. The local advice collector makes
+  queries and their advice strings visible only to the session where those
+  queries were planned, while the shared advice collector collects data
+  on a system-wide basis, and authorized users can examine data from all
+  sessions.
+ </para>
+
+ <para>
+  To enable a collector, you must first set a collection limit. When the
+  number of queries for which advice has been stored exceeds the collection
+  limit, the oldest queries and the corresponding advice will be discarded.
+  Then, you must adjust a separate setting to actually enable advice
+  collection. For the local collector, set the collection limit by configuring
+  <literal>pg_collect_advice.local_collection_limit</literal> to a value
+  greater than zero, and then enable advice collection by setting
+  <literal>pg_collect_advice.local_collector = true</literal>. For the shared
+  collector, the procedure is the same, except that the names of the settings
+  are <literal>pg_collect_advice.shared_collection_limit</literal> and
+  <literal>pg_collect_advice.shared_collector</literal>. Note that in both
+  cases, query texts and advice strings are stored in memory, so
+  configuring large limits may result in considerable memory consumption.
+ </para>
+
+ <para>
+  Once the collector is enabled, you can run any queries for which you wish
+  to see the generated plan advice. Then, you can examine what has been
+  collected using whichever of
+  <literal>SELECT * FROM pg_get_collected_local_advice()</literal> or
+  <literal>SELECT * FROM pg_get_collected_shared_advice()</literal>
+  corresponds to the collector you enabled. To discard the collected advice
+  and release memory, you can call
+  <literal>pg_clear_collected_local_advice()</literal>
+  or <literal>pg_clear_collected_shared_advice()</literal>.
+ </para>
+
+ <para>
+  In addition to the query texts and advice strings, the advice collectors
+  will also store the OID of the role that caused the query to be planned,
+  the OID of the database in which the query was planned, the query ID,
+  and the time at which the collection occurred. This module does not
+  automatically enable query ID computation; therefore, if you want the
+  query ID value to be populated in collected advice, be sure to configure
+  <literal>compute_query_id = on</literal>. Otherwise, the query ID may
+  always show as <literal>0</literal>.
+ </para>
+
+ <sect2 id="pgcollectadvice-functions">
+  <title>Functions</title>
+
+  <variablelist>
+
+   <varlistentry>
+    <term>
+     <function>pg_clear_collected_local_advice() returns void</function>
+     <indexterm>
+      <primary>pg_clear_collected_local_advice</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      Removes all collected query texts and advice strings from backend-local
+      memory.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_get_collected_local_advice() returns setof (id bigint,
+        userid oid, dbid oid, queryid bigint, collection_time timestamptz,
+        query text, advice text)</function>
+     <indexterm>
+      <primary>pg_get_collected_local_advice</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      Returns all query texts and advice strings stored in the local
+      advice collector.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_clear_collected_shared_advice() returns void</function>
+     <indexterm>
+      <primary>pg_clear_collected_shared_advice</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      Removes all collected query texts and advice strings from shared
+      memory.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>pg_get_collected_shared_advice() returns setof (id bigint,
+        userid oid, dbid oid, queryid bigint, collection_time timestamptz,
+        query text, advice text)</function>
+     <indexterm>
+      <primary>pg_get_collected_shared_advice</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      Returns all query texts and advice strings stored in the shared
+      advice collector.
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+
+ </sect2>
+
+ <sect2 id="pgcollectadvice-config-params">
+  <title>Configuration Parameters</title>
+
+  <variablelist>
+
+   <varlistentry>
+    <term>
+     <varname>pg_collect_advice.local_collector</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_collect_advice.local_collector</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <varname>pg_collect_advice.local_collector</varname> enables the
+      local advice collector. The default value is <literal>false</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_collect_advice.local_collection_limit</varname> (<type>integer</type>)
+     <indexterm>
+      <primary><varname>pg_collect_advice.local_collection_limit</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <varname>pg_collect_advice.local_collection_limit</varname> sets the
+      maximum number of query texts and advice strings retained by the
+      local advice collector. The default value is <literal>0</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_collect_advice.shared_collector</varname> (<type>boolean</type>)
+     <indexterm>
+      <primary><varname>pg_collect_advice.shared_collector</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <varname>pg_collect_advice.shared_collector</varname> enables the
+      shared advice collector. The default value is <literal>false</literal>.
+      Only superusers and users with the appropriate <literal>SET</literal>
+      privilege can change this setting.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <varname>pg_collect_advice.shared_collection_limit</varname> (<type>integer</type>)
+     <indexterm>
+      <primary><varname>pg_collect_advice.shared_collection_limit</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <varname>pg_collect_advice.shared_collection_limit</varname> sets the
+      maximum number of query texts and advice strings retained by the
+      shared advice collector. The default value is <literal>0</literal>.
+      Only superusers and users with the appropriate <literal>SET</literal>
+      privilege can change this setting.
+     </para>
+    </listitem>
+   </varlistentry>
+
+  </variablelist>
+
+ </sect2>
+
+ <sect2 id="pgcollectadvice-author">
+  <title>Author</title>
+
+  <para>
+   Robert Haas <email>rhaas@postgresql.org</email>
+  </para>
+ </sect2>
+
+</sect1>

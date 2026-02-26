@@ -152,6 +152,7 @@ CREATE EXTENSION <replaceable>extension_name</replaceable>;
  &pageinspect;
  &passwordcheck;
  &pgbuffercache;
+ &pgcollectadvice;
  &pgcrypto;
  &pgfreespacemap;
  &pglogicalinspect;

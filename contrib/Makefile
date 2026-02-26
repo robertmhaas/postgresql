@@ -31,6 +31,7 @@ SUBDIRS = \
 		pageinspect	\
 		passwordcheck	\
 		pg_buffercache	\
+		pg_collect_advice \
 		pg_freespacemap \
 		pg_logicalinspect \
 		pg_overexplain \
