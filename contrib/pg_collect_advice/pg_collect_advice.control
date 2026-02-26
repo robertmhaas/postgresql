@@ -1,0 +1,5 @@
+# pg_collect_advice extension
+comment = 'collect queries and the associated plan advice'
+default_version = '1.0'
+module_pathname = '$libdir/pg_collect_advice'
+relocatable = true
