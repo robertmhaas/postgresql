@@ -30,6 +30,7 @@ SUBDIRS = \
 		oid2name	\
 		pageinspect	\
 		passwordcheck	\
+		pg_stash_advice	\
 		pg_buffercache	\
 		pg_collect_advice \
 		pg_freespacemap \
