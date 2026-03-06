@@ -23,7 +23,6 @@
 #include "postgres.h"
 
 #include "access/timeline.h"
-#include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xlogrecovery.h"
@@ -1352,8 +1351,7 @@ SummarizeSmgrRecord(XLogReaderState *xlogreader, BlockRefTable *brtab)
 									   MAIN_FORKNUM, xlrec->blkno);
 		if ((xlrec->flags & SMGR_TRUNCATE_VM) != 0)
 			BlockRefTableSetLimitBlock(brtab, &xlrec->rlocator,
-									   VISIBILITYMAP_FORKNUM,
-									   visibilitymap_truncation_length(xlrec->blkno));
+									   VISIBILITYMAP_FORKNUM, xlrec->blkno);
 	}
 }
 
