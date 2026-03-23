@@ -340,6 +340,7 @@ build_minmax_path(PlannerInfo *root, MinMaxAggInfo *mminfo,
 	memcpy(subroot, root, sizeof(PlannerInfo));
 	subroot->query_level++;
 	subroot->parent_root = root;
+	subroot->alternative_root = root;
 	subroot->plan_name = choose_plan_name(root->glob, "minmax", true);
 
 	/* reset subplan-related stuff */

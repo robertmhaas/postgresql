@@ -317,6 +317,17 @@ struct PlannerInfo
 	/* NULL at outermost Query */
 	PlannerInfo *parent_root pg_node_attr(read_write_ignore);
 
+	/*
+	 * If this PlannerInfo exists to consider an alternative implementation
+	 * strategy for a portion of the query that could also be implemented by
+	 * some other PlannerInfo, this points to that other PlannerInfo. When
+	 * we are considering the first or only alternative, it is NULL.
+	 *
+	 * Currently, we use this when considering a MinMaxAggPath or a hashed
+	 * SubPlan.
+	 */
+	PlannerInfo *alternative_root pg_node_attr(read_write_ignore);
+
 	/* Subplan name for EXPLAIN and debugging purposes (NULL at top level) */
 	char	   *plan_name;
 
