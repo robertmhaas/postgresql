@@ -125,6 +125,23 @@ SELECT * FROM pg_get_advice_stashes() ORDER BY stash_name;
 SELECT stash_name, advice_string
 	FROM pg_get_advice_stash_contents('regress_stash') ORDER BY query_id;
 
+-- Can't create a stash that already exists, or drop one that doesn't.
+SELECT pg_create_advice_stash('regress_stash');
+SELECT pg_drop_advice_stash('no_such_stash');
+
+-- Can't add to or remove from a stash that does not exist.
+SELECT pg_set_stashed_advice('no_such_stash', 1, 'SEQ_SCAN(t)');
+SELECT pg_set_stashed_advice('no_such_stash', 1, null);
+
+-- Can't use query ID 0.
+SELECT pg_set_stashed_advice('regress_stash', 0, 'SEQ_SCAN(t)');
+
+-- Stash names must be non-empty, ASCII, and not too long.
+SELECT pg_create_advice_stash('');
+SELECT pg_create_advice_stash('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+SELECT pg_create_advice_stash(E'caf\u00e9');
+SET pg_stash_advice.stash_name = 'café';
+
 -- Clean up state in dynamic shared memory.
 SELECT pg_drop_advice_stash('regress_stash');
 SELECT pg_drop_advice_stash('regress_empty_stash');
