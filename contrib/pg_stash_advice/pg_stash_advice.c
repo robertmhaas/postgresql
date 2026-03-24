@@ -489,7 +489,7 @@ pgsa_advisor(PlannerGlobal *glob, Query *parse,
 	memset(&key, 0, sizeof(pgsa_entry_key));
 	key.pgsa_stash_id = stash_id;
 	key.queryId = parse->queryId;
-	entry = dshash_find(pgsa_entry_dshash, &key, true);
+	entry = dshash_find(pgsa_entry_dshash, &key, false);
 	if (entry == NULL)
 		return NULL;
 	if (entry->advice_string == InvalidDsaPointer)
@@ -761,9 +761,10 @@ pgsa_drop_stash(char *stash_name)
 	dshash_delete_entry(pgsa_stash_dshash, stash);
 
 	/*
-	 * It should now be impossible for any new entries to be added for the
-	 * advice stash we just deleted. Go through and clean out all the existing
-	 * ones.
+	 * Now remove all the entries. Since pgsa_state->lock must be held at
+	 * least in shared mode to insert entries into pgsa_entry_dshash, it
+	 * doesn't matter whether we do this before or after deleting the entry
+	 * from pgsa_stash_dshash.
 	 */
 	dshash_seq_init(&iterator, pgsa_entry_dshash, true);
 	while ((entry = dshash_seq_next(&iterator)) != NULL)
@@ -831,49 +832,69 @@ pgsa_set_advice_string(char *stash_name, int64 queryId, char *advice_string)
 	dsa_pointer new_dp;
 	dsa_pointer old_dp;
 
-	/* Translate the stash name to an integer ID. */
-restart:
+	/*
+	 * The work we need to do in this function is basically simple, but the
+	 * danger of a server-lifespan DSA memory leak is very real. Acquiring a
+	 * lock here helps for two reasons.
+	 *
+	 * First, it holds off interrupts, so that we can't bail out of this code
+	 * after allocating DSA memory for the advice string and before storing
+	 * the resulting pointer somewhere that others can find it.
+	 *
+	 * Second, we need to avoid a race against pgsa_drop_stash(). That
+	 * function removes a stash_name->stash_id mapping and all the entries for
+	 * that stash_id. Without the lock, there's a race condition no matter
+	 * which of those things it does first, because as soon as we've looked up
+	 * the stash ID, that whole function can execute before we do the rest of
+	 * our work, which would result in us adding an entry for a stash that no
+	 * longer exists.
+	 */
+	LWLockAcquire(&pgsa_state->lock, LW_SHARED);
+
+	/* Look up the stash ID. */
 	if ((stash_id = pgsa_lookup_stash_id(stash_name)) == 0)
 		ereport(ERROR,
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				errmsg("advice stash \"%s\" does not exist", stash_name));
 
-	/* Make sure that an entry exists. */
-	memset(&key, 0, sizeof(pgsa_entry_key));
-	key.pgsa_stash_id = stash_id;
-	key.queryId = queryId;
-	entry = dshash_find_or_insert(pgsa_entry_dshash, &key, &found);
-	if (!found)
-		entry->advice_string = InvalidDsaPointer;
-	dshash_release_lock(pgsa_entry_dshash, entry);
-
-	/*
-	 * Copy the advice string into dynamic shared memory.
-	 *
-	 * If we fail after this point, we'll have a server-lifespan memory leak.
-	 * We assume that, having created the entry above, we'll be able to find
-	 * it again without an error.
-	 */
+	/* Allocate space for the advice string. */
 	new_dp = dsa_allocate(pgsa_dsa_area, strlen(advice_string) + 1);
 	strcpy(dsa_get_address(pgsa_dsa_area, new_dp), advice_string);
 
+	/* Attempt to insert an entry into the hash table. */
+	memset(&key, 0, sizeof(pgsa_entry_key));
+	key.pgsa_stash_id = stash_id;
+	key.queryId = queryId;
+	entry = dshash_find_or_insert_extended(pgsa_entry_dshash, &key, &found,
+										   DSHASH_INSERT_NO_OOM);
+
 	/*
-	 * Refind the entry and swap the new pointer into place.
-	 *
-	 * If the entry has been deleted since we found or created it above, free
-	 * memory and retry from the top.
+	 * If it didn't work, bail out, being careful to free the shared memory
+	 * we've already allocated before throwing an error, since error cleanup
+	 * will not do so.
 	 */
-	entry = dshash_find(pgsa_entry_dshash, &key, true);
 	if (entry == NULL)
 	{
 		dsa_free(pgsa_dsa_area, new_dp);
-		goto restart;
+		ereport(ERROR,
+				errcode(ERRCODE_OUT_OF_MEMORY),
+				errmsg("out of memory"),
+				errdetail("could not insert advice string into shared hash table"));
 	}
-	old_dp = entry->advice_string;
+
+	/* Update the entry and release the lock. */
+	old_dp = found ? entry->advice_string : InvalidDsaPointer;
 	entry->advice_string = new_dp;
 	dshash_release_lock(pgsa_entry_dshash, entry);
 
-	/* If we replaced an old advice string, free it. */
-	if (old_dp != InvalidDsaPointer)
+	/*
+	 * We're not safe from leaks yet!
+	 *
+	 * There's now a pointer to new_dp in the entry that we just updated, but
+	 * that means that there's no longer anything pointing to old_dp. Free it
+	 * first, and then we can release our last LWLock, allowing interrupts.
+	 */
+	if (DsaPointerIsValid(old_dp))
 		dsa_free(pgsa_dsa_area, old_dp);
+	LWLockRelease(&pgsa_state->lock);
 }
