@@ -1039,17 +1039,6 @@ composite_to_jsonb(Datum composite, JsonbInState *result)
 	ReleaseTupleDesc(tupdesc);
 }
 
-/*
- * Is the given type immutable when coming out of a JSONB context?
- */
-bool
-to_jsonb_is_immutable(Oid typoid)
-{
-	bool		has_mutable = false;
-
-	json_check_mutability(typoid, &has_mutable);
-	return !has_mutable;
-}
 
 /*
  * SQL function to_jsonb(anyvalue)

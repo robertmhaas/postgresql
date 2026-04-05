@@ -55,7 +55,7 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
-#include "utils/json.h"
+#include "utils/jsontypes.h"
 #include "utils/jsonb.h"
 #include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
@@ -405,9 +405,6 @@ contain_mutable_functions_walker(Node *node, void *context)
 	{
 		const JsonConstructorExpr *ctor = (JsonConstructorExpr *) node;
 		ListCell   *lc;
-		bool		is_jsonb;
-
-		is_jsonb = ctor->returning->format->format_type == JS_FORMAT_JSONB;
 
 		/*
 		 * Check argument_type => json[b] conversions specifically.  We still
@@ -418,10 +415,10 @@ contain_mutable_functions_walker(Node *node, void *context)
 		foreach(lc, ctor->args)
 		{
 			Oid			typid = exprType(lfirst(lc));
+			bool		has_mutable = false;
 
-			if (is_jsonb ?
-				!to_jsonb_is_immutable(typid) :
-				!to_json_is_immutable(typid))
+			json_check_mutability(typid, &has_mutable);
+			if (has_mutable)
 				return true;
 		}
 

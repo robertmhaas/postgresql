@@ -27,7 +27,6 @@ extern void escape_json_with_len(StringInfo buf, const char *str, int len);
 extern void escape_json_text(StringInfo buf, const text *txt);
 extern char *JsonEncodeDateTime(char *buf, Datum value, Oid typid,
 								const int *tzp);
-extern bool to_json_is_immutable(Oid typoid);
 extern Datum json_build_object_worker(int nargs, const Datum *args,
 									  const bool *nulls,
 									  const JsonTypeCategory *categories,

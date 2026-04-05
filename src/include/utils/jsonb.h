@@ -460,7 +460,6 @@ extern Datum jsonb_get_element(Jsonb *jb, const Datum *path, int npath,
 							   bool *isnull, bool as_text);
 extern Datum datum_to_jsonb(Datum val, JsonTypeCategory tcategory,
 							FmgrInfo *outflinfo);
-extern bool to_jsonb_is_immutable(Oid typoid);
 extern Datum jsonb_build_object_worker(int nargs, const Datum *args,
 									   const bool *nulls,
 									   const JsonTypeCategory *categories,

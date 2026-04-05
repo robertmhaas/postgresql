@@ -656,17 +656,6 @@ row_to_json_pretty(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text_with_len(result.data, result.len));
 }
 
-/*
- * Is the given type immutable when coming out of a JSON context?
- */
-bool
-to_json_is_immutable(Oid typoid)
-{
-	bool		has_mutable = false;
-
-	json_check_mutability(typoid, &has_mutable);
-	return !has_mutable;
-}
 
 /*
  * SQL function to_json(anyvalue)
