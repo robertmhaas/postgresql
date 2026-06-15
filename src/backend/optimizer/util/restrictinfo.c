@@ -16,6 +16,7 @@
 
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/restrictinfo.h"
@@ -347,7 +348,8 @@ make_sub_restrictinfos(PlannerInfo *root,
  * btree and hash opclasses as the original op.
  */
 RestrictInfo *
-commute_restrictinfo(RestrictInfo *rinfo, Oid comm_op)
+commute_restrictinfo(RestrictInfo *rinfo, Oid comm_op, Oid comm_op_owner,
+					 Provenances *provenances)
 {
 	RestrictInfo *result;
 	OpExpr	   *newclause;
@@ -364,6 +366,8 @@ commute_restrictinfo(RestrictInfo *rinfo, Oid comm_op)
 	newclause->opfuncid = InvalidOid;
 	newclause->args = list_make2(lsecond(clause->args),
 								 linitial(clause->args));
+	newclause->pidx = ProvenanceForOperator(provenances, comm_op,
+											comm_op_owner, clause->pidx);
 
 	/* likewise, flat-copy all the fields of rinfo ... */
 	result = makeNode(RestrictInfo);

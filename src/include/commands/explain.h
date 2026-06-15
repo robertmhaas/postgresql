@@ -26,7 +26,8 @@ typedef void (*ExplainOneQuery_hook_type) (Query *query,
 										   ExplainState *es,
 										   const char *queryString,
 										   ParamListInfo params,
-										   QueryEnvironment *queryEnv);
+										   QueryEnvironment *queryEnv,
+										   Provenances *provenances);
 extern PGDLLIMPORT ExplainOneQuery_hook_type ExplainOneQuery_hook;
 
 /* Hook for EXPLAIN plugins to print extra information for each plan */
@@ -56,7 +57,8 @@ extern void ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 extern void standard_ExplainOneQuery(Query *query, int cursorOptions,
 									 IntoClause *into, ExplainState *es,
 									 const char *queryString, ParamListInfo params,
-									 QueryEnvironment *queryEnv);
+									 QueryEnvironment *queryEnv,
+									 Provenances *provenances);
 
 extern TupleDesc ExplainResultDesc(ExplainStmt *stmt);
 

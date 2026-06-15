@@ -18,6 +18,7 @@
 #include "access/tupdesc.h"
 #include "lib/ilist.h"
 #include "nodes/params.h"
+#include "nodes/provenance.h"
 #include "tcop/cmdtag.h"
 #include "utils/queryenvironment.h"
 #include "utils/resowner.h"
@@ -108,6 +109,7 @@ typedef struct CachedPlanSource
 	RawStmt    *raw_parse_tree; /* output of raw_parser(), or NULL */
 	Query	   *analyzed_parse_tree;	/* analyzed parse tree, or NULL */
 	const char *query_string;	/* source text of query */
+	Provenances *parse_provenances; /* provenance for parse/analyze phase */
 	CommandTag	commandTag;		/* command tag for query */
 	Oid		   *param_types;	/* array of parameter type OIDs, or NULL */
 	int			num_params;		/* length of param_types array */
@@ -121,6 +123,7 @@ typedef struct CachedPlanSource
 	MemoryContext context;		/* memory context holding all above */
 	/* These fields describe the current analyzed-and-rewritten query tree: */
 	List	   *query_list;		/* list of Query nodes, or NIL if not valid */
+	Provenances *rewrite_provenances;	/* provenance for rewritten queries */
 	List	   *relationOids;	/* OIDs of relations the queries depend on */
 	List	   *invalItems;		/* other dependencies, as PlanInvalItems */
 	struct SearchPathMatcher *search_path;	/* search_path used for parsing
@@ -204,13 +207,16 @@ extern void ReleaseAllPlanCacheRefsInOwner(ResourceOwner owner);
 
 extern CachedPlanSource *CreateCachedPlan(const RawStmt *raw_parse_tree,
 										  const char *query_string,
-										  CommandTag commandTag);
+										  CommandTag commandTag,
+										  Provenances *provenances);
 extern CachedPlanSource *CreateCachedPlanForQuery(Query *analyzed_parse_tree,
 												  const char *query_string,
-												  CommandTag commandTag);
+												  CommandTag commandTag,
+												  Provenances *provenances);
 extern CachedPlanSource *CreateOneShotCachedPlan(RawStmt *raw_parse_tree,
 												 const char *query_string,
-												 CommandTag commandTag);
+												 CommandTag commandTag,
+												 Provenances *provenances);
 extern void CompleteCachedPlan(CachedPlanSource *plansource,
 							   List *querytree_list,
 							   MemoryContext querytree_context,
@@ -219,7 +225,8 @@ extern void CompleteCachedPlan(CachedPlanSource *plansource,
 							   ParserSetupHook parserSetup,
 							   void *parserSetupArg,
 							   int cursor_options,
-							   bool fixed_result);
+							   bool fixed_result,
+							   Provenances *provenances);
 extern void SetPostRewriteHook(CachedPlanSource *plansource,
 							   PostRewriteHook postRewrite,
 							   void *postRewriteArg);
@@ -250,7 +257,8 @@ extern bool CachedPlanIsSimplyValid(CachedPlanSource *plansource,
 									CachedPlan *plan,
 									ResourceOwner owner);
 
-extern CachedExpression *GetCachedExpression(Node *expr);
+extern CachedExpression *GetCachedExpression(Node *expr,
+											 Provenances *provenances);
 extern void FreeCachedExpression(CachedExpression *cexpr);
 
 #endif							/* PLANCACHE_H */

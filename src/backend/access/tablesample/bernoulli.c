@@ -94,7 +94,7 @@ bernoulli_samplescangetsamplesize(PlannerInfo *root,
 
 	/* Try to extract an estimate for the sample percentage */
 	pctnode = (Node *) linitial(paramexprs);
-	pctnode = estimate_expression_value(root, pctnode);
+	pctnode = estimate_expression_value(root, pctnode, NULL);
 
 	if (IsA(pctnode, Const) &&
 		!((Const *) pctnode)->constisnull)

@@ -1202,6 +1202,8 @@ copy_table(Relation rel)
 	copybuf = makeStringInfo();
 
 	pstate = make_parsestate(NULL);
+	pstate->p_provenances =
+		InitProvenances(MySubscription->provenances, 0);
 	(void) addRangeTableEntryForRelation(pstate, rel, AccessShareLock,
 										 NULL, false, false);
 

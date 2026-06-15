@@ -37,6 +37,7 @@
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_collate.h"
@@ -152,6 +153,8 @@ static HeapTuple check_modified_virtual_generated(TupleDesc tupdesc, HeapTuple t
  * relation, as well as ACL_EXECUTE on the trigger function.  For internal
  * triggers the caller must apply any required permission checks.
  *
+ * provenances may be NULL if the WHEN clause does not need to be transformed.
+ *
  * When called on partitioned tables, this function recurses to create the
  * trigger on all the partitions, except if isInternal is true, in which
  * case caller is expected to execute recursion on its own.  in_partition
@@ -162,13 +165,14 @@ ObjectAddress
 CreateTrigger(const CreateTrigStmt *stmt, const char *queryString,
 			  Oid relOid, Oid refRelOid, Oid constraintOid, Oid indexOid,
 			  Oid funcoid, Oid parentTriggerOid, Node *whenClause,
-			  bool isInternal, bool in_partition)
+			  bool isInternal, bool in_partition, Provenances *provenances)
 {
 	return
 		CreateTriggerFiringOn(stmt, queryString, relOid, refRelOid,
 							  constraintOid, indexOid, funcoid,
 							  parentTriggerOid, whenClause, isInternal,
-							  in_partition, TRIGGER_FIRES_ON_ORIGIN);
+							  in_partition, TRIGGER_FIRES_ON_ORIGIN,
+							  provenances);
 }
 
 /*
@@ -180,7 +184,7 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 					  Oid relOid, Oid refRelOid, Oid constraintOid,
 					  Oid indexOid, Oid funcoid, Oid parentTriggerOid,
 					  Node *whenClause, bool isInternal, bool in_partition,
-					  char trigger_fires_when)
+					  char trigger_fires_when, Provenances *provenances)
 {
 	int16		tgtype;
 	int			ncolumns;
@@ -571,9 +575,12 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 		List	   *varList;
 		ListCell   *lc;
 
+		Assert(provenances != NULL);
+
 		/* Set up a pstate to parse with */
 		pstate = make_parsestate(NULL);
 		pstate->p_sourcetext = queryString;
+		pstate->p_provenances = provenances;
 
 		/*
 		 * Set up nsitems for OLD and NEW references.
@@ -1192,7 +1199,8 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 								  partdesc->oids[i], refRelOid,
 								  InvalidOid, InvalidOid,
 								  funcoid, trigoid, qual,
-								  isInternal, true, trigger_fires_when);
+								  isInternal, true, trigger_fires_when,
+								  provenances);
 
 			table_close(childTbl, NoLock);
 
@@ -3547,12 +3555,24 @@ TriggerEnabled(EState *estate, ResultRelInfo *relinfo,
 		 */
 		if (*predicate == NULL)
 		{
+			ProvenanceIndex pidx;
 			Node	   *tgqual;
 
 			oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
-			tgqual = stringToNode(trigger->tgqual);
-			tgqual = expand_generated_columns_in_expr(tgqual, relinfo->ri_RelationDesc, PRS2_OLD_VARNO);
-			tgqual = expand_generated_columns_in_expr(tgqual, relinfo->ri_RelationDesc, PRS2_NEW_VARNO);
+
+			pidx = ProvenanceForTrigger(estate->es_provenances,
+										trigger->tgoid,
+										relinfo->ri_RelationDesc->rd_rel->relowner,
+										0);
+			tgqual = stringToNode(trigger->tgqual, pidx);
+			tgqual = expand_generated_columns_in_expr(tgqual,
+													  relinfo->ri_RelationDesc,
+													  PRS2_OLD_VARNO,
+													  estate->es_provenances);
+			tgqual = expand_generated_columns_in_expr(tgqual,
+													  relinfo->ri_RelationDesc,
+													  PRS2_NEW_VARNO,
+													  estate->es_provenances);
 			/* Change references to OLD and NEW to INNER_VAR and OUTER_VAR */
 			ChangeVarNodes(tgqual, PRS2_OLD_VARNO, INNER_VAR, 0);
 			ChangeVarNodes(tgqual, PRS2_NEW_VARNO, OUTER_VAR, 0);

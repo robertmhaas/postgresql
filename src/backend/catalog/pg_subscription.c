@@ -196,6 +196,10 @@ GetSubscription(Oid subid, bool missing_ok, bool aclcheck)
 	/* Is the subscription owner a superuser? */
 	sub->ownersuperuser = superuser_arg(sub->owner);
 
+	/* Initialize a provenance root for this subscription. */
+	sub->provenances =
+		InitProvenancesForSubscription(sub->oid, sub->owner);
+
 	ReleaseSysCache(tup);
 
 	MemoryContextSwitchTo(oldcxt);

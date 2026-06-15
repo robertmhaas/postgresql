@@ -139,7 +139,9 @@ GetIndexInputType(Relation index, AttrNumber indexcol)
 	 * If the index expressions are already cached, skip calling
 	 * RelationGetIndexExpressions, as it will make a copy which is overkill.
 	 * We're not going to modify the trees, and we're not going to do anything
-	 * that would invalidate the relcache entry before we're done.
+	 * that would invalidate the relcache entry before we're done. We're also
+	 * not going to execute anything in the tree, so we don't need to fetch
+	 * provenances, either.
 	 */
 	if (index->rd_indexprs)
 		indexprs = index->rd_indexprs;

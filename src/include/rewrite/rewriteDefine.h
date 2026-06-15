@@ -23,7 +23,7 @@
 #define RULE_FIRES_ON_REPLICA	'R'
 #define RULE_DISABLED			'D'
 
-extern ObjectAddress DefineRule(RuleStmt *stmt, const char *queryString);
+extern ObjectAddress DefineRule(ParseState *pstate, RuleStmt *stmt);
 
 extern ObjectAddress DefineQueryRewrite(const char *rulename,
 										Oid event_relid,

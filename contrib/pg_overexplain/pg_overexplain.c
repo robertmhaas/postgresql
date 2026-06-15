@@ -10,16 +10,19 @@
  */
 #include "postgres.h"
 
+#include "catalog/objectaddress.h"
 #include "catalog/pg_class.h"
 #include "commands/defrem.h"
 #include "commands/explain.h"
 #include "commands/explain_format.h"
 #include "commands/explain_state.h"
 #include "fmgr.h"
+#include "miscadmin.h"
 #include "parser/parsetree.h"
 #include "storage/lock.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "nodes/provenance.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_overexplain",
@@ -30,6 +33,7 @@ typedef struct
 {
 	bool		debug;
 	bool		range_table;
+	bool		provenance;
 } overexplain_options;
 
 static overexplain_options *overexplain_ensure_options(ExplainState *es);
@@ -37,6 +41,8 @@ static void overexplain_debug_handler(ExplainState *es, DefElem *opt,
 									  ParseState *pstate);
 static void overexplain_range_table_handler(ExplainState *es, DefElem *opt,
 											ParseState *pstate);
+static void overexplain_provenance_handler(ExplainState *es, DefElem *opt,
+										   ParseState *pstate);
 static void overexplain_per_node_hook(PlanState *planstate, List *ancestors,
 									  const char *relationship,
 									  const char *plan_name,
@@ -50,6 +56,18 @@ static void overexplain_per_plan_hook(PlannedStmt *plannedstmt,
 static void overexplain_debug(PlannedStmt *plannedstmt, ExplainState *es);
 static void overexplain_range_table(PlannedStmt *plannedstmt,
 									ExplainState *es);
+static void overexplain_provenance(PlannedStmt *plannedstmt,
+								   ExplainState *es);
+static void overexplain_provenance_entry(PlannedStmt *plannedstmt,
+										 ExplainState *es,
+										 ProvenanceIndex index,
+										 int depth);
+static void overexplain_provenance_subtree(PlannedStmt *plannedstmt,
+										   ExplainState *es,
+										   ProvenanceIndex index,
+										   ProvenanceIndex *firstchild,
+										   ProvenanceIndex *nextchild,
+										   int depth);
 static void overexplain_alias(const char *qlabel, Alias *alias,
 							  ExplainState *es);
 static void overexplain_bitmapset(const char *qlabel, Bitmapset *bms,
@@ -77,6 +95,9 @@ _PG_init(void)
 								   GUCCheckBooleanExplainOption);
 	RegisterExtensionExplainOption("range_table",
 								   overexplain_range_table_handler,
+								   GUCCheckBooleanExplainOption);
+	RegisterExtensionExplainOption("provenance",
+								   overexplain_provenance_handler,
 								   GUCCheckBooleanExplainOption);
 
 	/* Use the per-node and per-plan hooks to make our options do something. */
@@ -127,6 +148,18 @@ overexplain_range_table_handler(ExplainState *es, DefElem *opt,
 	overexplain_options *options = overexplain_ensure_options(es);
 
 	options->range_table = defGetBoolean(opt);
+}
+
+/*
+ * Parse handler for EXPLAIN (PROVENANCE).
+ */
+static void
+overexplain_provenance_handler(ExplainState *es, DefElem *opt,
+							   ParseState *pstate)
+{
+	overexplain_options *options = overexplain_ensure_options(es);
+
+	options->provenance = defGetBoolean(opt);
 }
 
 /*
@@ -333,6 +366,9 @@ overexplain_per_plan_hook(PlannedStmt *plannedstmt,
 
 	if (options->range_table)
 		overexplain_range_table(plannedstmt, es);
+
+	if (options->provenance)
+		overexplain_provenance(plannedstmt, es);
 }
 
 /*
@@ -792,6 +828,154 @@ overexplain_range_table(PlannedStmt *plannedstmt, ExplainState *es)
 		!bms_is_empty(plannedstmt->resultRelationRelids))
 		overexplain_bitmapset("Result RTIs", plannedstmt->resultRelationRelids,
 							  es);
+}
+
+/*
+ * Provide detailed information about the provenances of the PlannedStmt.
+ *
+ * Entries are displayed in depth-first topological order.
+ */
+static void
+overexplain_provenance(PlannedStmt *plannedstmt, ExplainState *es)
+{
+	ProvenanceIndex *firstchild;
+	ProvenanceIndex *nextchild;
+	Provenances *provenances = plannedstmt->provenances;
+	int			length;
+
+	ExplainOpenGroup("Provenances", "Provenances", false, es);
+
+	if (provenances == NULL)
+	{
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			ExplainIndentText(es);
+			appendStringInfoString(es->str, "Provenances: none\n");
+		}
+		ExplainCloseGroup("Provenances", "Provenances", false, es);
+		return;
+	}
+
+	/*
+	 * Initialize firstchild/nextchild arrays suitable for eventual calls to
+	 * overexplain_provenance_subtree. Initially, we don't know about any
+	 * children of any nodes, so set all entries to -1.
+	 */
+	length = provenances->length;
+	firstchild = palloc_array(ProvenanceIndex, length);
+	nextchild = palloc_array(ProvenanceIndex, length);
+	for (int i = 0; i < length; i++)
+	{
+		firstchild[i] = -1;
+		nextchild[i] = -1;
+	}
+
+	/*
+	 * Now walk the provenance entry array in reverse order, so that the
+	 * children of each parent end up in forward (index) order.
+	 */
+	for (ProvenanceIndex index = length - 1; index >= 0; index--)
+	{
+		ProvenanceIndex parent_index;
+
+		parent_index = provenances->entries[index].prov_parent_index;
+
+		/*
+		 * If index == parent_index, this entry is self-referential and
+		 * therefore has no parent. Otherwise, push this entry on to the
+		 * beginning of the parent's list of known children.
+		 */
+		if (index != parent_index)
+		{
+			nextchild[index] = firstchild[parent_index];
+			firstchild[parent_index] = index;
+		}
+	}
+
+	/*
+	 * There should be only a single root of which every provenance is a
+	 * descendant, but instead of assuming that, we begin a tree traversal
+	 * with every ProvenanceEntry that has no parent, which should guarantee
+	 * that everything is displayed even if the tree is really a forest.
+	 */
+	for (ProvenanceIndex index = 0; index < length; index++)
+	{
+		ProvenanceIndex parent_index;
+
+		parent_index = provenances->entries[index].prov_parent_index;
+		if (index == parent_index)
+			overexplain_provenance_subtree(plannedstmt, es, index,
+										   firstchild, nextchild,
+										   0);
+	}
+
+	ExplainCloseGroup("Provenances", "Provenances", false, es);
+}
+
+/*
+ * Display a single provenance entry, indented to the given depth.
+ */
+static void
+overexplain_provenance_entry(PlannedStmt *plannedstmt, ExplainState *es,
+							 ProvenanceIndex index, int depth)
+{
+	ProvenanceEntry *prov = &plannedstmt->provenances->entries[index];
+	char	   *object;
+	char	   *rolename;
+
+	/* Describe the provenance source. */
+	object = DescribeProvenance(prov->prov_kind, prov->prov_object_id);
+
+	/* Look up the role name. */
+	rolename = GetUserNameFromId(prov->prov_role_id, true);
+	if (rolename == NULL)
+		rolename = psprintf("OID %u",
+							prov->prov_role_id);
+
+	/* Display the entry. */
+	ExplainOpenGroup("Provenance", NULL, true, es);
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		ExplainIndentText(es);
+		appendStringInfoSpaces(es->str, depth * 2);
+		appendStringInfo(es->str, "Provenance %d: %s",
+						 index, object);
+		appendStringInfo(es->str, " (role: %s)\n",
+						 rolename);
+	}
+	else
+	{
+		ExplainPropertyInteger("Index", NULL, index, es);
+		ExplainPropertyText("Object", object, es);
+		ExplainPropertyText("Role", rolename, es);
+		ExplainPropertyInteger("Parent", NULL,
+							   prov->prov_parent_index, es);
+	}
+	ExplainCloseGroup("Provenance", NULL, true, es);
+}
+
+/*
+ * Recursively display a provenance subtree in depth-first order.
+ *
+ * firstchild[i] is the first child of entry i, or -1 if it has no
+ * children.  nextchild[i] is the next sibling of entry i, or -1 if
+ * it is the last child of its parent.
+ */
+static void
+overexplain_provenance_subtree(PlannedStmt *plannedstmt, ExplainState *es,
+							   ProvenanceIndex index,
+							   ProvenanceIndex *firstchild,
+							   ProvenanceIndex *nextchild,
+							   int depth)
+{
+	ProvenanceIndex child;
+
+	overexplain_provenance_entry(plannedstmt, es, index, depth);
+
+	for (child = firstchild[index]; child >= 0; child = nextchild[child])
+		overexplain_provenance_subtree(plannedstmt, es, child,
+									   firstchild, nextchild,
+									   depth + 1);
 }
 
 /*

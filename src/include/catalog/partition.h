@@ -13,6 +13,7 @@
 #ifndef PARTITION_H
 #define PARTITION_H
 
+#include "nodes/provenance.h"
 #include "partitioning/partdefs.h"
 #include "utils/relcache.h"
 
@@ -29,6 +30,7 @@ extern bool has_partition_attrs(Relation rel, Bitmapset *attnums,
 
 extern Oid	get_default_partition_oid(Oid parentId);
 extern void update_default_partition_oid(Oid parentId, Oid defaultPartId);
-extern List *get_proposed_default_constraint(List *new_part_constraints);
+extern List *get_proposed_default_constraint(List *new_part_constraints,
+											 Provenances *provenances);
 
 #endif							/* PARTITION_H */

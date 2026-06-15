@@ -86,7 +86,7 @@ PG_FUNCTION_INFO_V1(test_random_operations);
 
 /* Encode/Decode to/from TEXT and Bitmapset */
 #define BITMAPSET_TO_TEXT(bms) cstring_to_text(nodeToString(bms))
-#define TEXT_TO_BITMAPSET(str) ((Bitmapset *) stringToNode(text_to_cstring(str)))
+#define TEXT_TO_BITMAPSET(str) ((Bitmapset *) stringToNode(text_to_cstring(str), PI_NEVER_EXECUTED))
 
 /*
  * Helper macro to fetch text parameters as Bitmapsets. SQL-NULL means empty

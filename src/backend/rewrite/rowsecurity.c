@@ -61,7 +61,12 @@ static void add_security_quals(int rt_index,
 							   List *permissive_policies,
 							   List *restrictive_policies,
 							   List **securityQuals,
-							   bool *hasSubLinks);
+							   bool *hasSubLinks,
+							   Provenances *provenances);
+
+static Expr *translate_policy_qual(bool wco_qual, int rt_index,
+								   RowSecurityPolicy *policy,
+								   Provenances *provenances);
 
 static void add_with_check_options(Relation rel,
 								   int rt_index,
@@ -70,7 +75,8 @@ static void add_with_check_options(Relation rel,
 								   List *restrictive_policies,
 								   List **withCheckOptions,
 								   bool *hasSubLinks,
-								   bool force_using);
+								   bool force_using,
+								   Provenances *provenances);
 
 static bool check_role_for_policy(ArrayType *policy_roles, Oid user_id);
 
@@ -97,7 +103,8 @@ row_security_policy_hook_type row_security_policy_hook_restrictive = NULL;
 void
 get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 						  List **securityQuals, List **withCheckOptions,
-						  bool *hasRowSecurity, bool *hasSubLinks)
+						  bool *hasRowSecurity, bool *hasSubLinks,
+						  Provenances *provenances)
 {
 	Oid			user_id;
 	int			rls_status;
@@ -205,7 +212,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 						   update_permissive_policies,
 						   update_restrictive_policies,
 						   securityQuals,
-						   hasSubLinks);
+						   hasSubLinks,
+						   provenances);
 	}
 
 	/*
@@ -225,7 +233,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 						   permissive_policies,
 						   restrictive_policies,
 						   securityQuals,
-						   hasSubLinks);
+						   hasSubLinks,
+						   provenances);
 
 	/*
 	 * Similar to above, during an UPDATE, DELETE, or MERGE, if SELECT rights
@@ -252,7 +261,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 						   select_permissive_policies,
 						   select_restrictive_policies,
 						   securityQuals,
-						   hasSubLinks);
+						   hasSubLinks,
+						   provenances);
 	}
 
 	/*
@@ -273,7 +283,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 							   restrictive_policies,
 							   withCheckOptions,
 							   hasSubLinks,
-							   false);
+							   false,
+							   provenances);
 
 		/*
 		 * Get and add ALL/SELECT policies, if SELECT rights are required for
@@ -297,7 +308,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 								   select_restrictive_policies,
 								   withCheckOptions,
 								   hasSubLinks,
-								   true);
+								   true,
+								   provenances);
 		}
 
 		/*
@@ -336,7 +348,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 									   conflict_restrictive_policies,
 									   withCheckOptions,
 									   hasSubLinks,
-									   true);
+									   true,
+									   provenances);
 			}
 
 			/*
@@ -357,7 +370,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 									   conflict_select_restrictive_policies,
 									   withCheckOptions,
 									   hasSubLinks,
-									   true);
+									   true,
+									   provenances);
 			}
 
 			/*
@@ -373,7 +387,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 									   conflict_restrictive_policies,
 									   withCheckOptions,
 									   hasSubLinks,
-									   false);
+									   false,
+									   provenances);
 
 				/*
 				 * Add ALL/SELECT policies as WCO_RLS_UPDATE_CHECK WCOs, to
@@ -388,7 +403,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 										   conflict_select_restrictive_policies,
 										   withCheckOptions,
 										   hasSubLinks,
-										   true);
+										   true,
+										   provenances);
 			}
 		}
 	}
@@ -445,7 +461,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 							   merge_update_restrictive_policies,
 							   withCheckOptions,
 							   hasSubLinks,
-							   true);
+							   true,
+							   provenances);
 
 		/* Enforce the WITH CHECK clauses of the UPDATE policies */
 		add_with_check_options(rel, rt_index,
@@ -454,7 +471,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 							   merge_update_restrictive_policies,
 							   withCheckOptions,
 							   hasSubLinks,
-							   false);
+							   false,
+							   provenances);
 
 		/*
 		 * Add ALL/SELECT policies as WCO_RLS_UPDATE_CHECK WCOs, to ensure
@@ -472,7 +490,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 								   merge_select_restrictive_policies,
 								   withCheckOptions,
 								   hasSubLinks,
-								   true);
+								   true,
+								   provenances);
 		}
 
 		/*
@@ -493,7 +512,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 							   merge_delete_restrictive_policies,
 							   withCheckOptions,
 							   hasSubLinks,
-							   true);
+							   true,
+							   provenances);
 
 		/*
 		 * No special handling is required for INSERT policies. They will be
@@ -510,7 +530,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 							   merge_insert_restrictive_policies,
 							   withCheckOptions,
 							   hasSubLinks,
-							   false);
+							   false,
+							   provenances);
 
 		/*
 		 * Add ALL/SELECT policies as WCO_RLS_INSERT_CHECK WCOs, to ensure
@@ -525,7 +546,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 								   merge_select_restrictive_policies,
 								   withCheckOptions,
 								   hasSubLinks,
-								   true);
+								   true,
+								   provenances);
 	}
 
 	table_close(rel, NoLock);
@@ -648,6 +670,8 @@ get_policies_for_relation(Relation relation, CmdType cmd, Oid user_id,
 		{
 			RowSecurityPolicy *policy = (RowSecurityPolicy *) lfirst(item);
 
+			Assert(policy->provenances != NULL);
+
 			if (check_role_for_policy(policy->roles, user_id))
 				*restrictive_policies = lappend(*restrictive_policies, policy);
 		}
@@ -661,6 +685,8 @@ get_policies_for_relation(Relation relation, CmdType cmd, Oid user_id,
 		foreach(item, hook_policies)
 		{
 			RowSecurityPolicy *policy = (RowSecurityPolicy *) lfirst(item);
+
+			Assert(policy->provenances != NULL);
 
 			if (check_role_for_policy(policy->roles, user_id))
 				*permissive_policies = lappend(*permissive_policies, policy);
@@ -716,7 +742,8 @@ add_security_quals(int rt_index,
 				   List *permissive_policies,
 				   List *restrictive_policies,
 				   List **securityQuals,
-				   bool *hasSubLinks)
+				   bool *hasSubLinks,
+				   Provenances *provenances)
 {
 	ListCell   *item;
 	List	   *permissive_quals = NIL;
@@ -729,11 +756,12 @@ add_security_quals(int rt_index,
 	foreach(item, permissive_policies)
 	{
 		RowSecurityPolicy *policy = (RowSecurityPolicy *) lfirst(item);
+		Expr	   *qual;
 
-		if (policy->qual != NULL)
+		qual = translate_policy_qual(false, rt_index, policy, provenances);
+		if (qual != NULL)
 		{
-			permissive_quals = lappend(permissive_quals,
-									   copyObject(policy->qual));
+			permissive_quals = lappend(permissive_quals, qual);
 			*hasSubLinks |= policy->hassublinks;
 		}
 	}
@@ -757,11 +785,9 @@ add_security_quals(int rt_index,
 			RowSecurityPolicy *policy = (RowSecurityPolicy *) lfirst(item);
 			Expr	   *qual;
 
-			if (policy->qual != NULL)
+			qual = translate_policy_qual(false, rt_index, policy, provenances);
+			if (qual != NULL)
 			{
-				qual = copyObject(policy->qual);
-				ChangeVarNodes((Node *) qual, 1, rt_index, 0);
-
 				*securityQuals = list_append_unique(*securityQuals, qual);
 				*hasSubLinks |= policy->hassublinks;
 			}
@@ -776,7 +802,6 @@ add_security_quals(int rt_index,
 		else
 			rowsec_expr = makeBoolExpr(OR_EXPR, permissive_quals, -1);
 
-		ChangeVarNodes((Node *) rowsec_expr, 1, rt_index, 0);
 		*securityQuals = list_append_unique(*securityQuals, rowsec_expr);
 	}
 	else
@@ -815,15 +840,11 @@ add_with_check_options(Relation rel,
 					   List *restrictive_policies,
 					   List **withCheckOptions,
 					   bool *hasSubLinks,
-					   bool force_using)
+					   bool force_using,
+					   Provenances *provenances)
 {
 	ListCell   *item;
 	List	   *permissive_quals = NIL;
-
-#define QUAL_FOR_WCO(policy) \
-	( !force_using && \
-	  (policy)->with_check_qual != NULL ? \
-	  (policy)->with_check_qual : (policy)->qual )
 
 	/*
 	 * First collect up the permissive policy clauses, similar to
@@ -832,11 +853,14 @@ add_with_check_options(Relation rel,
 	foreach(item, permissive_policies)
 	{
 		RowSecurityPolicy *policy = (RowSecurityPolicy *) lfirst(item);
-		Expr	   *qual = QUAL_FOR_WCO(policy);
+		Expr	   *qual;
+
+		qual = translate_policy_qual(!force_using, rt_index, policy,
+									 provenances);
 
 		if (qual != NULL)
 		{
-			permissive_quals = lappend(permissive_quals, copyObject(qual));
+			permissive_quals = lappend(permissive_quals, qual);
 			*hasSubLinks |= policy->hassublinks;
 		}
 	}
@@ -870,8 +894,6 @@ add_with_check_options(Relation rel,
 		else
 			wco->qual = (Node *) makeBoolExpr(OR_EXPR, permissive_quals, -1);
 
-		ChangeVarNodes(wco->qual, 1, rt_index, 0);
-
 		*withCheckOptions = list_append_unique(*withCheckOptions, wco);
 
 		/*
@@ -883,13 +905,12 @@ add_with_check_options(Relation rel,
 		foreach(item, restrictive_policies)
 		{
 			RowSecurityPolicy *policy = (RowSecurityPolicy *) lfirst(item);
-			Expr	   *qual = QUAL_FOR_WCO(policy);
+			Expr	   *qual;
 
+			qual = translate_policy_qual(!force_using, rt_index, policy,
+										 provenances);
 			if (qual != NULL)
 			{
-				qual = copyObject(qual);
-				ChangeVarNodes((Node *) qual, 1, rt_index, 0);
-
 				wco = makeNode(WithCheckOption);
 				wco->kind = kind;
 				wco->relname = pstrdup(RelationGetRelationName(rel));
@@ -921,6 +942,41 @@ add_with_check_options(Relation rel,
 
 		*withCheckOptions = lappend(*withCheckOptions, wco);
 	}
+}
+
+/*
+ * translate_policy_qual -
+ *   adjust provenance offsets and varnos for a cached policy qual
+ */
+static Expr *
+translate_policy_qual(bool wco_qual, int rt_index,
+					  RowSecurityPolicy *policy,
+					  Provenances *provenances)
+{
+	ProvenanceIndex poffset;
+	Node	   *qual;
+
+	/* Incorporate policy's provenances into caller's provenances. */
+	poffset = AppendProvenances(provenances, policy->provenances, 0);
+
+	/* Select correct qual. */
+	if (wco_qual && policy->with_check_qual != NULL)
+		qual = (Node *) policy->with_check_qual;
+	else
+		qual = (Node *) policy->qual;
+
+	/* Quick exit if no work to do. */
+	if (qual == NULL)
+		return NULL;
+
+	/* Copy the qual. */
+	qual = copyObject(qual);
+
+	/* Adjust provenance indexes and varnos. */
+	OffsetProvenances(qual, poffset);
+	ChangeVarNodes(qual, 1, rt_index, 0);
+
+	return (Expr *) qual;
 }
 
 /*

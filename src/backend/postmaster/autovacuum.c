@@ -85,6 +85,7 @@
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/interrupt.h"
@@ -389,7 +390,8 @@ static void relation_needs_vacanalyze(Oid relid, AutoVacOpts *relopts,
 									  AutoVacuumScores *scores);
 
 static void autovacuum_do_vac_analyze(autovac_table *tab,
-									  BufferAccessStrategy bstrategy);
+									  BufferAccessStrategy bstrategy,
+									  Provenances *provenances);
 static AutoVacOpts *extract_autovac_opts(HeapTuple tup,
 										 TupleDesc pg_class_desc);
 static void perform_work_item(AutoVacuumWorkItem *workitem);
@@ -1941,6 +1943,7 @@ do_autovacuum(void)
 	bool		did_vacuum = false;
 	bool		found_concurrent_worker = false;
 	int			i;
+	Provenances *provenances;
 
 	/*
 	 * StartTransactionCommand and CommitTransactionCommand will automatically
@@ -1951,6 +1954,9 @@ do_autovacuum(void)
 										  "Autovacuum worker",
 										  ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(AutovacMemCxt);
+
+	/* Initialize provenances for this autovacuum worker's session. */
+	provenances = InitProvenancesForSession();
 
 	/* Start a transaction so our commands have one to play into. */
 	StartTransactionCommand();
@@ -2514,7 +2520,7 @@ do_autovacuum(void)
 			MemoryContextSwitchTo(PortalContext);
 
 			/* have at it */
-			autovacuum_do_vac_analyze(tab, bstrategy);
+			autovacuum_do_vac_analyze(tab, bstrategy, provenances);
 
 			/*
 			 * Clear a possible query-cancel signal, to avoid a late reaction
@@ -3341,7 +3347,8 @@ relation_needs_vacanalyze(Oid relid,
  * disappear at transaction commit.
  */
 static void
-autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessStrategy bstrategy)
+autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessStrategy bstrategy,
+						  Provenances *provenances)
 {
 	RangeVar   *rangevar;
 	VacuumRelation *rel;
@@ -3364,7 +3371,8 @@ autovacuum_do_vac_analyze(autovac_table *tab, BufferAccessStrategy bstrategy)
 	rel_list = list_make1(rel);
 	MemoryContextSwitchTo(old_context);
 
-	vacuum(rel_list, &tab->at_params, bstrategy, vac_context, true);
+	vacuum(rel_list, &tab->at_params, bstrategy, vac_context, true,
+		   InitProvenances(provenances, 0));
 
 	MemoryContextDelete(vac_context);
 }

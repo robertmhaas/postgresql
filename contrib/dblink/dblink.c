@@ -62,6 +62,7 @@
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "nodes/provenance.h"
 #include "utils/rel.h"
 #include "utils/tuplestore.h"
 #include "utils/varlena.h"
@@ -111,12 +112,20 @@ static remoteConn *createNewConnection(const char *name);
 static void deleteConnection(const char *name);
 static char **get_pkey_attnames(Relation rel, int16 *indnkeyatts);
 static char **get_text_array_contents(ArrayType *array, int *numitems);
-static char *get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals);
-static char *get_sql_delete(Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals);
-static char *get_sql_update(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals);
+static char *get_sql_insert(Relation rel, int *pkattnums, int pknumatts,
+							char **src_pkattvals, char **tgt_pkattvals,
+							Provenances *provenances);
+static char *get_sql_delete(Relation rel, int *pkattnums, int pknumatts,
+							char **tgt_pkattvals);
+static char *get_sql_update(Relation rel, int *pkattnums, int pknumatts,
+							char **src_pkattvals, char **tgt_pkattvals,
+							Provenances *provenances);
 static char *quote_ident_cstr(char *rawstr);
 static int	get_attnum_pk_pos(int *pkattnums, int pknumatts, int key);
-static HeapTuple get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals);
+static HeapTuple get_tuple_of_interest(Relation rel, int *pkattnums,
+									   int pknumatts,
+									   char **src_pkattvals,
+									   Provenances *provenances);
 static Relation get_rel_from_relname(text *relname_text, LOCKMODE lockmode, AclMode aclmode);
 static char *generate_relation_name(Relation rel);
 static void dblink_connstr_check(const char *connstr);
@@ -1677,7 +1686,8 @@ dblink_build_sql_insert(PG_FUNCTION_ARGS)
 	/*
 	 * Prep work is finally done. Go get the SQL string.
 	 */
-	sql = get_sql_insert(rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals);
+	sql = get_sql_insert(rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals,
+						 InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	/*
 	 * Now we can close the relation.
@@ -1842,7 +1852,8 @@ dblink_build_sql_update(PG_FUNCTION_ARGS)
 	/*
 	 * Prep work is finally done. Go get the SQL string.
 	 */
-	sql = get_sql_update(rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals);
+	sql = get_sql_update(rel, pkattnums, pknumatts, src_pkattvals, tgt_pkattvals,
+						 InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	/*
 	 * Now we can close the relation.
@@ -2129,7 +2140,9 @@ get_text_array_contents(ArrayType *array, int *numitems)
 }
 
 static char *
-get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals)
+get_sql_insert(Relation rel, int *pkattnums, int pknumatts,
+			   char **src_pkattvals, char **tgt_pkattvals,
+			   Provenances *provenances)
 {
 	char	   *relname;
 	HeapTuple	tuple;
@@ -2149,7 +2162,8 @@ get_sql_insert(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals
 	tupdesc = rel->rd_att;
 	natts = tupdesc->natts;
 
-	tuple = get_tuple_of_interest(rel, pkattnums, pknumatts, src_pkattvals);
+	tuple = get_tuple_of_interest(rel, pkattnums, pknumatts, src_pkattvals,
+								  provenances);
 	if (!tuple)
 		ereport(ERROR,
 				(errcode(ERRCODE_CARDINALITY_VIOLATION),
@@ -2246,7 +2260,9 @@ get_sql_delete(Relation rel, int *pkattnums, int pknumatts, char **tgt_pkattvals
 }
 
 static char *
-get_sql_update(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals, char **tgt_pkattvals)
+get_sql_update(Relation rel, int *pkattnums, int pknumatts,
+			   char **src_pkattvals, char **tgt_pkattvals,
+			   Provenances *provenances)
 {
 	char	   *relname;
 	HeapTuple	tuple;
@@ -2266,7 +2282,8 @@ get_sql_update(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals
 	tupdesc = rel->rd_att;
 	natts = tupdesc->natts;
 
-	tuple = get_tuple_of_interest(rel, pkattnums, pknumatts, src_pkattvals);
+	tuple = get_tuple_of_interest(rel, pkattnums, pknumatts, src_pkattvals,
+								  provenances);
 	if (!tuple)
 		ereport(ERROR,
 				(errcode(ERRCODE_CARDINALITY_VIOLATION),
@@ -2367,7 +2384,9 @@ get_attnum_pk_pos(int *pkattnums, int pknumatts, int key)
 }
 
 static HeapTuple
-get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals)
+get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts,
+					  char **src_pkattvals,
+					  Provenances *provenances)
 {
 	char	   *relname;
 	TupleDesc	tupdesc;
@@ -2436,7 +2455,7 @@ get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts, char **src_pk
 	/*
 	 * Retrieve the desired tuple
 	 */
-	ret = SPI_exec(buf.data, 0);
+	ret = SPI_exec(buf.data, 0, provenances);
 	pfree(buf.data);
 
 	/*

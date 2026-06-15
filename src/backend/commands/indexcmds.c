@@ -48,6 +48,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_oper.h"
@@ -75,7 +76,7 @@
 
 /* non-export function prototypes */
 static bool CompareOpclassOptions(const Datum *opts1, const Datum *opts2, int natts);
-static void CheckPredicate(Expr *predicate);
+static void CheckPredicate(Expr *predicate, Provenances *provenances);
 static void ComputeIndexAttrs(ParseState *pstate,
 							  IndexInfo *indexInfo,
 							  Oid *typeOids,
@@ -100,21 +101,25 @@ static char *ChooseIndexName(const char *tabname, Oid namespaceId,
 static char *ChooseIndexNameAddition(const List *colnames);
 static List *ChooseIndexColumnNames(const List *indexElems);
 static void ReindexIndex(const ReindexStmt *stmt, const ReindexParams *params,
-						 bool isTopLevel);
+						 bool isTopLevel, Provenances *provenances);
 static void RangeVarCallbackForReindexIndex(const RangeVar *relation,
 											Oid relId, Oid oldRelId, void *arg);
 static Oid	ReindexTable(const ReindexStmt *stmt, const ReindexParams *params,
-						 bool isTopLevel);
+						 bool isTopLevel, Provenances *provenances);
 static void ReindexMultipleTables(const ReindexStmt *stmt,
-								  const ReindexParams *params);
+								  const ReindexParams *params,
+								  Provenances *provenances);
 static void reindex_error_callback(void *arg);
 static void ReindexPartitions(const ReindexStmt *stmt, Oid relid,
-							  const ReindexParams *params, bool isTopLevel);
+							  const ReindexParams *params, bool isTopLevel,
+							  Provenances *provenances);
 static void ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids,
-									const ReindexParams *params);
+									const ReindexParams *params,
+									Provenances *provenances);
 static bool ReindexRelationConcurrently(const ReindexStmt *stmt,
 										Oid relationOid,
-										const ReindexParams *params);
+										const ReindexParams *params,
+										Provenances *provenances);
 static void update_relispartition(Oid relationId, bool newval);
 static inline void set_indexsafe_procflags(void);
 
@@ -180,7 +185,8 @@ CheckIndexCompatible(Oid oldId,
 					 const char *accessMethodName,
 					 const List *attributeList,
 					 const List *exclusionOpNames,
-					 bool isWithoutOverlaps)
+					 bool isWithoutOverlaps,
+					 Provenances *provenances)
 {
 	bool		isconstraint;
 	Oid		   *typeIds;
@@ -189,6 +195,7 @@ CheckIndexCompatible(Oid oldId,
 	Datum	   *opclassOptions;
 	Oid			accessMethodId;
 	Oid			relationId;
+	ParseState *pstate;
 	HeapTuple	tuple;
 	Form_pg_index indexForm;
 	Form_pg_am	accessMethodForm;
@@ -243,14 +250,17 @@ CheckIndexCompatible(Oid oldId,
 	 * ii_NumIndexKeyAttrs with same value.
 	 */
 	indexInfo = makeIndexInfo(numberOfAttributes, numberOfAttributes,
-							  accessMethodId, NIL, NIL, false, false,
+							  accessMethodId, NIL, NULL, NIL, NULL,
+							  false, false,
 							  false, false, amsummarizing, isWithoutOverlaps);
 	typeIds = palloc_array(Oid, numberOfAttributes);
 	collationIds = palloc_array(Oid, numberOfAttributes);
 	opclassIds = palloc_array(Oid, numberOfAttributes);
 	opclassOptions = palloc_array(Datum, numberOfAttributes);
 	coloptions = palloc_array(int16, numberOfAttributes);
-	ComputeIndexAttrs(NULL, indexInfo,
+	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
+	ComputeIndexAttrs(pstate, indexInfo,
 					  typeIds, collationIds, opclassIds, opclassOptions,
 					  coloptions, attributeList,
 					  exclusionOpNames, relationId,
@@ -594,6 +604,10 @@ DefineIndex(ParseState *pstate,
 	Oid			root_save_userid;
 	int			root_save_sec_context;
 	int			root_save_nestlevel;
+	Provenances *provenances;
+
+	/* Separate parse-time provenances from execution-time provenances. */
+	provenances = InitProvenances(pstate->p_provenances, 0);
 
 	root_save_nestlevel = NewGUCNestLevel();
 
@@ -906,7 +920,8 @@ DefineIndex(ParseState *pstate,
 	 * Validate predicate, if given
 	 */
 	if (stmt->whereClause)
-		CheckPredicate((Expr *) stmt->whereClause);
+		CheckPredicate((Expr *) stmt->whereClause,
+					   pstate->p_provenances);
 
 	/*
 	 * Parse AM-specific options, convert to text array form, validate.
@@ -925,7 +940,9 @@ DefineIndex(ParseState *pstate,
 							  numberOfKeyAttributes,
 							  accessMethodId,
 							  NIL,	/* expressions, NIL for now */
+							  NULL,
 							  make_ands_implicit((Expr *) stmt->whereClause),
+							  stmt->whereProvenances,
 							  stmt->unique,
 							  stmt->nulls_not_distinct,
 							  !concurrent,
@@ -1260,7 +1277,8 @@ DefineIndex(ParseState *pstate,
 					 coloptions, NULL, reloptions,
 					 flags, constr_flags,
 					 allowSystemTableMods, !check_rights,
-					 &createdConstraintId);
+					 &createdConstraintId,
+					 provenances);
 
 	ObjectAddressSet(address, RelationRelationId, indexRelationId);
 
@@ -1528,7 +1546,7 @@ DefineIndex(ParseState *pstate,
 					SetUserIdAndSecContext(root_save_userid,
 										   root_save_sec_context);
 					childAddr =
-						DefineIndex(NULL,	/* original pstate not applicable */
+						DefineIndex(pstate,
 									childRelid, childStmt,
 									InvalidOid, /* no predefined OID */
 									indexRelationId,	/* this is our child */
@@ -1716,7 +1734,7 @@ DefineIndex(ParseState *pstate,
 	PushActiveSnapshot(GetTransactionSnapshot());
 
 	/* Perform concurrent build of index */
-	index_concurrently_build(tableId, indexRelationId);
+	index_concurrently_build(tableId, indexRelationId, provenances);
 
 	/* we can do away with our snapshot */
 	PopActiveSnapshot();
@@ -1762,7 +1780,7 @@ DefineIndex(ParseState *pstate,
 	/*
 	 * Scan the index and the heap, insert any missing index entries.
 	 */
-	validate_index(tableId, indexRelationId, snapshot);
+	validate_index(tableId, indexRelationId, snapshot, pstate->p_provenances);
 
 	/*
 	 * Drop the reference snapshot.  We must do this before waiting out other
@@ -1851,7 +1869,7 @@ DefineIndex(ParseState *pstate,
  * (except ones requiring a plan), and let indxpath.c fend for itself.
  */
 static void
-CheckPredicate(Expr *predicate)
+CheckPredicate(Expr *predicate, Provenances *provenances)
 {
 	/*
 	 * transformExpr() should have already rejected subqueries, aggregates,
@@ -1862,7 +1880,7 @@ CheckPredicate(Expr *predicate)
 	 * A predicate using mutable functions is probably wrong, for the same
 	 * reasons that we don't allow an index expression to use one.
 	 */
-	if (contain_mutable_functions_after_planning(predicate))
+	if (contain_mutable_functions_after_planning(predicate, provenances))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("functions in index predicate must be marked IMMUTABLE")));
@@ -2028,7 +2046,8 @@ ComputeIndexAttrs(ParseState *pstate,
 				 * same data every time, it's not clear what the index entries
 				 * mean at all.
 				 */
-				if (contain_mutable_functions_after_planning((Expr *) expr))
+				if (contain_mutable_functions_after_planning((Expr *) expr,
+															 pstate->p_provenances))
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 							 errmsg("functions in index expression must be marked IMMUTABLE"),
@@ -2212,12 +2231,14 @@ ComputeIndexAttrs(ParseState *pstate,
 			CompareType cmptype;
 			StrategyNumber strat;
 			Oid			opid;
+			Oid			dummy_opfamily;
 
 			if (attn == nkeycols - 1)
 				cmptype = COMPARE_OVERLAP;
 			else
 				cmptype = COMPARE_EQ;
-			GetOperatorFromCompareType(opclassOids[attn], InvalidOid, cmptype, &opid, &strat);
+			GetOperatorFromCompareType(opclassOids[attn], InvalidOid, cmptype,
+									   &opid, &strat, &dummy_opfamily);
 			indexInfo->ii_ExclusionOps[attn] = opid;
 			indexInfo->ii_ExclusionProcs[attn] = get_opcode(opid);
 			indexInfo->ii_ExclusionStrats[attn] = strat;
@@ -2274,6 +2295,9 @@ ComputeIndexAttrs(ParseState *pstate,
 
 		attn++;
 	}
+
+	if (indexInfo->ii_Expressions != NIL)
+		indexInfo->ii_ExpressionProvenances = pstate->p_provenances;
 }
 
 /*
@@ -2462,6 +2486,7 @@ GetDefaultOpClass(Oid type_id, Oid am_id)
  * cmptype - kind of operator to find
  * opid - holds the operator we found
  * strat - holds the output strategy number
+ * opfamily - the opfamily we used to lookup the operator
  *
  * Finds an operator from a CompareType.  This is used for temporal index
  * constraints (and other temporal features) to look up equality and overlaps
@@ -2471,10 +2496,9 @@ GetDefaultOpClass(Oid type_id, Oid am_id)
  */
 void
 GetOperatorFromCompareType(Oid opclass, Oid rhstype, CompareType cmptype,
-						   Oid *opid, StrategyNumber *strat)
+						   Oid *opid, StrategyNumber *strat, Oid *opfamily)
 {
 	Oid			amid;
-	Oid			opfamily;
 	Oid			opcintype;
 
 	Assert(cmptype == COMPARE_EQ || cmptype == COMPARE_OVERLAP || cmptype == COMPARE_CONTAINED_BY);
@@ -2483,7 +2507,7 @@ GetOperatorFromCompareType(Oid opclass, Oid rhstype, CompareType cmptype,
 	 * Use the opclass to get the opfamily, opcintype, and access method. If
 	 * any of this fails, quit early.
 	 */
-	if (!get_opclass_opfamily_and_input_type(opclass, &opfamily, &opcintype))
+	if (!get_opclass_opfamily_and_input_type(opclass, opfamily, &opcintype))
 		elog(ERROR, "cache lookup failed for opclass %u", opclass);
 
 	amid = get_opclass_method(opclass);
@@ -2491,7 +2515,7 @@ GetOperatorFromCompareType(Oid opclass, Oid rhstype, CompareType cmptype,
 	/*
 	 * Ask the index AM to translate to its internal stratnum
 	 */
-	*strat = IndexAmTranslateCompareType(cmptype, amid, opfamily, true);
+	*strat = IndexAmTranslateCompareType(cmptype, amid, *opfamily, true);
 	if (*strat == InvalidStrategy)
 		ereport(ERROR,
 				errcode(ERRCODE_UNDEFINED_OBJECT),
@@ -2499,7 +2523,7 @@ GetOperatorFromCompareType(Oid opclass, Oid rhstype, CompareType cmptype,
 				cmptype == COMPARE_OVERLAP ? errmsg("could not identify an overlaps operator for type %s", format_type_be(opcintype)) :
 				cmptype == COMPARE_CONTAINED_BY ? errmsg("could not identify a contained-by operator for type %s", format_type_be(opcintype)) : 0,
 				errdetail("Could not translate compare type %d for operator family \"%s\" of access method \"%s\".",
-						  cmptype, get_opfamily_name(opfamily, false), get_am_name(amid)));
+						  cmptype, get_opfamily_name(*opfamily, false), get_am_name(amid)));
 
 	/*
 	 * We parameterize rhstype so foreign keys can ask for a <@ operator whose
@@ -2508,7 +2532,7 @@ GetOperatorFromCompareType(Oid opclass, Oid rhstype, CompareType cmptype,
 	 */
 	if (!OidIsValid(rhstype))
 		rhstype = opcintype;
-	*opid = get_opfamily_member(opfamily, opcintype, rhstype, *strat);
+	*opid = get_opfamily_member(*opfamily, opcintype, rhstype, *strat);
 
 	if (!OidIsValid(*opid))
 		ereport(ERROR,
@@ -2517,7 +2541,7 @@ GetOperatorFromCompareType(Oid opclass, Oid rhstype, CompareType cmptype,
 				cmptype == COMPARE_OVERLAP ? errmsg("could not identify an overlaps operator for type %s", format_type_be(opcintype)) :
 				cmptype == COMPARE_CONTAINED_BY ? errmsg("could not identify a contained-by operator for type %s", format_type_be(opcintype)) : 0,
 				errdetail("There is no suitable operator in operator family \"%s\" for access method \"%s\".",
-						  get_opfamily_name(opfamily, false), get_am_name(amid)));
+						  get_opfamily_name(*opfamily, false), get_am_name(amid)));
 }
 
 /*
@@ -2856,6 +2880,10 @@ ExecReindex(ParseState *pstate, const ReindexStmt *stmt, bool isTopLevel)
 	bool		concurrently = false;
 	bool		verbose = false;
 	char	   *tablespacename = NULL;
+	Provenances *provenances;
+
+	/* Separate parse-time provenances from execution-time provenances. */
+	provenances = InitProvenances(pstate->p_provenances, 0);
 
 	/* Parse option list */
 	foreach(lc, stmt->params)
@@ -2911,10 +2939,10 @@ ExecReindex(ParseState *pstate, const ReindexStmt *stmt, bool isTopLevel)
 	switch (stmt->kind)
 	{
 		case REINDEX_OBJECT_INDEX:
-			ReindexIndex(stmt, &params, isTopLevel);
+			ReindexIndex(stmt, &params, isTopLevel, provenances);
 			break;
 		case REINDEX_OBJECT_TABLE:
-			ReindexTable(stmt, &params, isTopLevel);
+			ReindexTable(stmt, &params, isTopLevel, provenances);
 			break;
 		case REINDEX_OBJECT_SCHEMA:
 		case REINDEX_OBJECT_SYSTEM:
@@ -2930,7 +2958,7 @@ ExecReindex(ParseState *pstate, const ReindexStmt *stmt, bool isTopLevel)
 									  (stmt->kind == REINDEX_OBJECT_SCHEMA) ? "REINDEX SCHEMA" :
 									  (stmt->kind == REINDEX_OBJECT_SYSTEM) ? "REINDEX SYSTEM" :
 									  "REINDEX DATABASE");
-			ReindexMultipleTables(stmt, &params);
+			ReindexMultipleTables(stmt, &params, provenances);
 			break;
 		default:
 			elog(ERROR, "unrecognized object type: %d",
@@ -2944,7 +2972,8 @@ ExecReindex(ParseState *pstate, const ReindexStmt *stmt, bool isTopLevel)
  *		Recreate a specific index.
  */
 static void
-ReindexIndex(const ReindexStmt *stmt, const ReindexParams *params, bool isTopLevel)
+ReindexIndex(const ReindexStmt *stmt, const ReindexParams *params,
+			 bool isTopLevel, Provenances *provenances)
 {
 	const RangeVar *indexRelation = stmt->relation;
 	struct ReindexIndexCallbackState state;
@@ -2979,16 +3008,17 @@ ReindexIndex(const ReindexStmt *stmt, const ReindexParams *params, bool isTopLev
 	relkind = get_rel_relkind(indOid);
 
 	if (relkind == RELKIND_PARTITIONED_INDEX)
-		ReindexPartitions(stmt, indOid, params, isTopLevel);
+		ReindexPartitions(stmt, indOid, params, isTopLevel, provenances);
 	else if ((params->options & REINDEXOPT_CONCURRENTLY) != 0 &&
 			 persistence != RELPERSISTENCE_TEMP)
-		ReindexRelationConcurrently(stmt, indOid, params);
+		ReindexRelationConcurrently(stmt, indOid, params, provenances);
 	else
 	{
 		ReindexParams newparams = *params;
 
 		newparams.options |= REINDEXOPT_REPORT_PROGRESS;
-		reindex_index(stmt, indOid, false, persistence, &newparams);
+		reindex_index(stmt, indOid, false, persistence, &newparams,
+					  provenances);
 	}
 }
 
@@ -3074,7 +3104,8 @@ RangeVarCallbackForReindexIndex(const RangeVar *relation,
  *		Recreate all indexes of a table (and of its toast table, if any)
  */
 static Oid
-ReindexTable(const ReindexStmt *stmt, const ReindexParams *params, bool isTopLevel)
+ReindexTable(const ReindexStmt *stmt, const ReindexParams *params,
+			 bool isTopLevel, Provenances *provenances)
 {
 	Oid			heapOid;
 	bool		result;
@@ -3095,11 +3126,13 @@ ReindexTable(const ReindexStmt *stmt, const ReindexParams *params, bool isTopLev
 									   RangeVarCallbackMaintainsTable, NULL);
 
 	if (get_rel_relkind(heapOid) == RELKIND_PARTITIONED_TABLE)
-		ReindexPartitions(stmt, heapOid, params, isTopLevel);
+		ReindexPartitions(stmt, heapOid, params, isTopLevel,
+						  provenances);
 	else if ((params->options & REINDEXOPT_CONCURRENTLY) != 0 &&
 			 get_rel_persistence(heapOid) != RELPERSISTENCE_TEMP)
 	{
-		result = ReindexRelationConcurrently(stmt, heapOid, params);
+		result = ReindexRelationConcurrently(stmt, heapOid, params,
+											 provenances);
 
 		if (!result)
 			ereport(NOTICE,
@@ -3114,7 +3147,7 @@ ReindexTable(const ReindexStmt *stmt, const ReindexParams *params, bool isTopLev
 		result = reindex_relation(stmt, heapOid,
 								  REINDEX_REL_PROCESS_TOAST |
 								  REINDEX_REL_CHECK_CONSTRAINTS,
-								  &newparams);
+								  &newparams, provenances);
 		if (!result)
 			ereport(NOTICE,
 					(errmsg("table \"%s\" has no indexes to reindex",
@@ -3133,7 +3166,8 @@ ReindexTable(const ReindexStmt *stmt, const ReindexParams *params, bool isTopLev
  * That means this must not be called within a user transaction block!
  */
 static void
-ReindexMultipleTables(const ReindexStmt *stmt, const ReindexParams *params)
+ReindexMultipleTables(const ReindexStmt *stmt, const ReindexParams *params,
+					  Provenances *provenances)
 {
 
 	Oid			objectOid;
@@ -3343,7 +3377,7 @@ ReindexMultipleTables(const ReindexStmt *stmt, const ReindexParams *params)
 	 * Process each relation listed in a separate transaction.  Note that this
 	 * commits and then starts a new transaction immediately.
 	 */
-	ReindexMultipleInternal(stmt, relids, params);
+	ReindexMultipleInternal(stmt, relids, params, provenances);
 
 	MemoryContextDelete(private_context);
 }
@@ -3373,7 +3407,9 @@ reindex_error_callback(void *arg)
  * by the caller.
  */
 static void
-ReindexPartitions(const ReindexStmt *stmt, Oid relid, const ReindexParams *params, bool isTopLevel)
+ReindexPartitions(const ReindexStmt *stmt, Oid relid,
+				  const ReindexParams *params, bool isTopLevel,
+				  Provenances *provenances)
 {
 	List	   *partitions = NIL;
 	char		relkind = get_rel_relkind(relid);
@@ -3449,7 +3485,7 @@ ReindexPartitions(const ReindexStmt *stmt, Oid relid, const ReindexParams *param
 	 * Process each partition listed in a separate transaction.  Note that
 	 * this commits and then starts a new transaction immediately.
 	 */
-	ReindexMultipleInternal(stmt, partitions, params);
+	ReindexMultipleInternal(stmt, partitions, params, provenances);
 
 	/*
 	 * Clean up working storage --- note we must do this after
@@ -3467,7 +3503,9 @@ ReindexPartitions(const ReindexStmt *stmt, Oid relid, const ReindexParams *param
  * and starts a new transaction when finished.
  */
 static void
-ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids, const ReindexParams *params)
+ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids,
+						const ReindexParams *params,
+						Provenances *provenances)
 {
 	ListCell   *l;
 
@@ -3526,7 +3564,8 @@ ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids, const Reind
 			ReindexParams newparams = *params;
 
 			newparams.options |= REINDEXOPT_MISSING_OK;
-			(void) ReindexRelationConcurrently(stmt, relid, &newparams);
+			(void) ReindexRelationConcurrently(stmt, relid, &newparams,
+											   provenances);
 			if (ActiveSnapshotSet())
 				PopActiveSnapshot();
 			/* ReindexRelationConcurrently() does the verbose output */
@@ -3537,7 +3576,8 @@ ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids, const Reind
 
 			newparams.options |=
 				REINDEXOPT_REPORT_PROGRESS | REINDEXOPT_MISSING_OK;
-			reindex_index(stmt, relid, false, relpersistence, &newparams);
+			reindex_index(stmt, relid, false, relpersistence, &newparams,
+						  provenances);
 			PopActiveSnapshot();
 			/* reindex_index() does the verbose output */
 		}
@@ -3551,7 +3591,7 @@ ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids, const Reind
 			result = reindex_relation(stmt, relid,
 									  REINDEX_REL_PROCESS_TOAST |
 									  REINDEX_REL_CHECK_CONSTRAINTS,
-									  &newparams);
+									  &newparams, provenances);
 
 			if (result && (params->options & REINDEXOPT_VERBOSE) != 0)
 				ereport(INFO,
@@ -3593,7 +3633,9 @@ ReindexMultipleInternal(const ReindexStmt *stmt, const List *relids, const Reind
  * anyway, and a non-concurrent reindex is more efficient.
  */
 static bool
-ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const ReindexParams *params)
+ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid,
+							const ReindexParams *params,
+							Provenances *provenances)
 {
 	typedef struct ReindexIndexInfo
 	{
@@ -3949,8 +3991,8 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 		RestrictSearchPath();
 
 		/* determine safety of this index for set_indexsafe_procflags */
-		idx->safe = (RelationGetIndexExpressions(indexRel) == NIL &&
-					 RelationGetIndexPredicate(indexRel) == NIL);
+		idx->safe = (!RelationHasIndexExpressions(indexRel) &&
+					 !RelationHasIndexPredicate(indexRel));
 
 #ifdef USE_INJECTION_POINTS
 		if (idx->safe)
@@ -3995,7 +4037,8 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 									   INDEX_CREATE_SUPPRESS_PROGRESS,
 									   idx->indexId,
 									   tablespaceid,
-									   concurrentName);
+									   concurrentName,
+									   provenances);
 
 		/*
 		 * Now open the relation of the new index, a session-level lock is
@@ -4152,7 +4195,8 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 		pgstat_progress_update_multi_param(4, progress_index, progress_vals);
 
 		/* Perform concurrent build of new index */
-		index_concurrently_build(newidx->tableId, newidx->indexId);
+		index_concurrently_build(newidx->tableId, newidx->indexId,
+								 provenances);
 
 		PopActiveSnapshot();
 		CommitTransactionCommand();
@@ -4215,7 +4259,8 @@ ReindexRelationConcurrently(const ReindexStmt *stmt, Oid relationOid, const Rein
 		progress_vals[3] = newidx->amId;
 		pgstat_progress_update_multi_param(4, progress_index, progress_vals);
 
-		validate_index(newidx->tableId, newidx->indexId, snapshot);
+		validate_index(newidx->tableId, newidx->indexId, snapshot,
+					   provenances);
 
 		/*
 		 * We can now do away with our active snapshot, we still need to save

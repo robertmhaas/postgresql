@@ -1144,9 +1144,15 @@ getOwnedSequences(Oid relid)
 
 /*
  * Get owned identity sequence, error if not exactly one.
+ *
+ * If *identity_relid is not NULL, it is set to the relation OID of the
+ * table or partitioned table with which the identity sequence is actually
+ * associated, which will be different from this relation OID if this
+ * relation is a partition.
  */
 Oid
-getIdentitySequence(Relation rel, AttrNumber attnum, bool missing_ok)
+getIdentitySequence(Relation rel, AttrNumber attnum, bool missing_ok,
+					Oid *identity_relid)
 {
 	Oid			relid = RelationGetRelid(rel);
 	List	   *seqlist;
@@ -1167,6 +1173,9 @@ getIdentitySequence(Relation rel, AttrNumber attnum, bool missing_ok)
 				 attname, relid);
 		list_free(ancestors);
 	}
+
+	if (identity_relid)
+		*identity_relid = relid;
 
 	seqlist = getOwnedSequences_internal(relid, attnum, DEPENDENCY_INTERNAL);
 	if (list_length(seqlist) > 1)

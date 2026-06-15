@@ -51,6 +51,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "nodes/provenance.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/ruleutils.h"
@@ -308,8 +309,11 @@ static RI_ConstraintInfo *ri_FetchConstraintInfo(Trigger *trigger,
 												 Relation trig_rel, bool rel_is_pk);
 static RI_ConstraintInfo *ri_LoadConstraintInfo(Oid constraintOid);
 static Oid	get_ri_constraint_root(Oid constrOid);
-static SPIPlanPtr ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
-							   RI_QueryKey *qkey, Relation fk_rel, Relation pk_rel);
+static SPIPlanPtr ri_PlanCheck(const char *querystr, int nargs,
+							   Oid *argtypes,
+							   RI_QueryKey *qkey, Relation fk_rel,
+							   Relation pk_rel,
+							   const RI_ConstraintInfo *riinfo);
 static bool ri_PerformCheck(const RI_ConstraintInfo *riinfo,
 							RI_QueryKey *qkey, SPIPlanPtr qplan,
 							Relation fk_rel, Relation pk_rel,
@@ -593,7 +597,7 @@ RI_FKey_check(TriggerData *trigdata)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel);
+							 &qkey, fk_rel, pk_rel, riinfo);
 	}
 
 	/*
@@ -762,7 +766,7 @@ ri_Check_Pk_Match(Relation pk_rel, Relation fk_rel,
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel);
+							 &qkey, fk_rel, pk_rel, riinfo);
 	}
 
 	/*
@@ -1038,7 +1042,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel);
+							 &qkey, fk_rel, pk_rel, riinfo);
 	}
 
 	/*
@@ -1139,7 +1143,7 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel);
+							 &qkey, fk_rel, pk_rel, riinfo);
 	}
 
 	/*
@@ -1257,7 +1261,7 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys * 2, queryoids,
-							 &qkey, fk_rel, pk_rel);
+							 &qkey, fk_rel, pk_rel, riinfo);
 	}
 
 	/*
@@ -1485,7 +1489,7 @@ ri_set(TriggerData *trigdata, bool is_set_null, int tgkind)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel);
+							 &qkey, fk_rel, pk_rel, riinfo);
 	}
 
 	/*
@@ -1690,8 +1694,14 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	char		workmembuf[32];
 	int			spi_result;
 	SPIPlanPtr	qplan;
+	Provenances *provenances;
 
 	riinfo = ri_FetchConstraintInfo(trigger, fk_rel, false);
+
+	provenances =
+		InitProvenancesForCache(PROVENANCE_CONSTRAINT,
+								riinfo->constraint_id,
+								RelationGetForm(fk_rel)->relowner);
 
 	/*
 	 * Check to make sure current user has enough permissions to do the test
@@ -1867,7 +1877,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	 * Generate the plan.  We don't need to cache it, and there are no
 	 * arguments to the plan.
 	 */
-	qplan = SPI_prepare(querybuf.data, 0, NULL);
+	qplan = SPI_prepare(querybuf.data, 0, NULL, provenances);
 
 	if (qplan == NULL)
 		elog(ERROR, "SPI_prepare returned %s for %s",
@@ -1980,8 +1990,14 @@ RI_PartitionRemove_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	int			spi_result;
 	SPIPlanPtr	qplan;
 	int			i;
+	Provenances *provenances;
 
 	riinfo = ri_FetchConstraintInfo(trigger, fk_rel, false);
+
+	provenances =
+		InitProvenancesForCache(PROVENANCE_CONSTRAINT,
+								riinfo->constraint_id,
+								RelationGetForm(fk_rel)->relowner);
 
 	/*
 	 * We don't check permissions before displaying the error message, on the
@@ -2106,7 +2122,7 @@ RI_PartitionRemove_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	 * Generate the plan.  We don't need to cache it, and there are no
 	 * arguments to the plan.
 	 */
-	qplan = SPI_prepare(querybuf.data, 0, NULL);
+	qplan = SPI_prepare(querybuf.data, 0, NULL, provenances);
 
 	if (qplan == NULL)
 		elog(ERROR, "SPI_prepare returned %s for %s",
@@ -2606,12 +2622,14 @@ InvalidateConstraintCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
  */
 static SPIPlanPtr
 ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
-			 RI_QueryKey *qkey, Relation fk_rel, Relation pk_rel)
+			 RI_QueryKey *qkey, Relation fk_rel, Relation pk_rel,
+			 const RI_ConstraintInfo *riinfo)
 {
 	SPIPlanPtr	qplan;
 	Relation	query_rel;
 	Oid			save_userid;
 	int			save_sec_context;
+	Provenances *provenances;
 
 	/*
 	 * Use the query type code to determine whether the query is run against
@@ -2622,6 +2640,11 @@ ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
 	else
 		query_rel = fk_rel;
 
+	provenances =
+		InitProvenancesForCache(PROVENANCE_CONSTRAINT,
+								riinfo->constraint_id,
+								RelationGetForm(query_rel)->relowner);
+
 	/* Switch to proper UID to perform check as */
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(RelationGetForm(query_rel)->relowner,
@@ -2629,7 +2652,7 @@ ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
 						   SECURITY_NOFORCE_RLS);
 
 	/* Create the plan */
-	qplan = SPI_prepare(querystr, nargs, argtypes);
+	qplan = SPI_prepare(querystr, nargs, argtypes, provenances);
 
 	if (qplan == NULL)
 		elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), querystr);

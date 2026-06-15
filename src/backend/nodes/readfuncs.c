@@ -28,6 +28,7 @@
 
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
+#include "nodes/provenance.h"
 #include "nodes/readfuncs.h"
 
 
@@ -134,6 +135,16 @@
 	(void) token;				/* in case not used elsewhere */ \
 	local_node->fldname = -1	/* set field to "unknown" */
 #endif
+
+/* Read a provenance index field (overridden by stringToNode's pidx arg) */
+#define READ_PROVENANCE_INDEX_FIELD(fldname) \
+	token = pg_strtok(&length);		/* skip :fldname */ \
+	token = pg_strtok(&length);		/* get field value */ \
+	if (provenance_index_override >= 0 || \
+		provenance_index_override == PI_NEVER_EXECUTED) \
+		local_node->fldname = provenance_index_override; \
+	else \
+		local_node->fldname = atoi(token)
 
 /* Read a Node field */
 #define READ_NODE_FIELD(fldname) \
@@ -563,6 +574,48 @@ _readExtensibleNode(void)
 
 	/* deserialize the private fields */
 	methods->nodeRead(local_node);
+
+	READ_DONE();
+}
+
+static Provenances *
+_readProvenances(void)
+{
+	Provenances *local_node = makeNode(Provenances);
+	const char *token;
+	int			length;
+	int			nentries;
+
+	token = pg_strtok(&length);
+	nentries = atoi(token);
+
+	local_node->length = nentries;
+	local_node->max_length = nentries;
+	local_node->entries = palloc_array(ProvenanceEntry, nentries);
+
+	for (int i = 0; i < nentries; i++)
+	{
+		ProvenanceEntry *pentry = &local_node->entries[i];
+
+		token = pg_strtok(&length);
+		if (token == NULL || length != 1 || token[0] != '(')
+			elog(ERROR, "expected ( at start of ProvenanceEntry");
+
+		token = pg_strtok(&length);
+		pentry->prov_kind = (ProvenanceKind) atoi(token);
+		token = pg_strtok(&length);
+		pentry->prov_object_id = atooid(token);
+		token = pg_strtok(&length);
+		pentry->prov_role_id = atooid(token);
+		token = pg_strtok(&length);
+		pentry->prov_parent_index = atoi(token);
+		token = pg_strtok(&length);
+		pentry->prov_sole_role_id = atooid(token);
+
+		token = pg_strtok(&length);
+		if (token == NULL || length != 1 || token[0] != ')')
+			elog(ERROR, "expected ) at end of ProvenanceEntry");
+	}
 
 	READ_DONE();
 }

@@ -27,6 +27,7 @@
  * forward references in this file
  */
 typedef struct IndexInfo IndexInfo;
+typedef struct Provenances Provenances;
 typedef struct RelationData *Relation;
 typedef struct TIDBitmap TIDBitmap;
 typedef struct TupleTableSlot TupleTableSlot;
@@ -59,6 +60,7 @@ typedef struct IndexVacuumInfo
 	int			message_level;	/* ereport level for progress messages */
 	double		num_heap_tuples;	/* tuples remaining in heap */
 	BufferAccessStrategy strategy;	/* access strategy for reads */
+	Provenances *provenances;	/* provenances for expression evaluation */
 } IndexVacuumInfo;
 
 /*

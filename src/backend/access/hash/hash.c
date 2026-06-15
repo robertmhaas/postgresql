@@ -132,7 +132,8 @@ hashhandler(PG_FUNCTION_ARGS)
  *	hashbuild() -- build a new hash index.
  */
 IndexBuildResult *
-hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+hashbuild(Relation heap, Relation index, IndexInfo *indexInfo,
+		  Provenances *provenances)
 {
 	IndexBuildResult *result;
 	BlockNumber relpages;
@@ -192,7 +193,7 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* do the heap scan */
 	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 									   hashbuildCallback,
-									   &buildstate, NULL);
+									   &buildstate, NULL, provenances);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL,
 								 buildstate.indtuples);
 

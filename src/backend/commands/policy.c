@@ -263,8 +263,14 @@ RelationBuildRowSecurity(Relation relation)
 		/* shouldn't be null, but let's check for luck */
 		if (isnull)
 			elog(ERROR, "unexpected null value in pg_policy.polroles");
+
+		/* Copy roles into cache context and set up provenances */
 		MemoryContextSwitchTo(rscxt);
 		policy->roles = DatumGetArrayTypePCopy(datum);
+		policy->provenances =
+			InitProvenancesForCache(PROVENANCE_POLICY,
+									policy_form->oid,
+									relation->rd_rel->relowner);
 		MemoryContextSwitchTo(oldcxt);
 
 		/* Get policy qual */
@@ -274,7 +280,7 @@ RelationBuildRowSecurity(Relation relation)
 		{
 			str_value = TextDatumGetCString(datum);
 			MemoryContextSwitchTo(rscxt);
-			policy->qual = (Expr *) stringToNode(str_value);
+			policy->qual = (Expr *) stringToNode(str_value, 0);
 			MemoryContextSwitchTo(oldcxt);
 			pfree(str_value);
 		}
@@ -288,7 +294,7 @@ RelationBuildRowSecurity(Relation relation)
 		{
 			str_value = TextDatumGetCString(datum);
 			MemoryContextSwitchTo(rscxt);
-			policy->with_check_qual = (Expr *) stringToNode(str_value);
+			policy->with_check_qual = (Expr *) stringToNode(str_value, 0);
 			MemoryContextSwitchTo(oldcxt);
 			pfree(str_value);
 		}
@@ -564,9 +570,10 @@ RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id)
  *	 handles the execution of the CREATE POLICY command.
  *
  * stmt - the CreatePolicyStmt that describes the policy to create.
+ * pstate - supplies source text and provenances
  */
 ObjectAddress
-CreatePolicy(CreatePolicyStmt *stmt)
+CreatePolicy(ParseState *pstate, CreatePolicyStmt *stmt)
 {
 	Relation	pg_policy_rel;
 	Oid			policy_id;
@@ -617,7 +624,9 @@ CreatePolicy(CreatePolicyStmt *stmt)
 
 	/* Parse the supplied clause */
 	qual_pstate = make_parsestate(NULL);
+	qual_pstate->p_provenances = pstate->p_provenances;
 	with_check_pstate = make_parsestate(NULL);
+	with_check_pstate->p_provenances = pstate->p_provenances;
 
 	/* zero-clear */
 	memset(values, 0, sizeof(values));
@@ -763,9 +772,10 @@ CreatePolicy(CreatePolicyStmt *stmt)
  *	 handles the execution of the ALTER POLICY command.
  *
  * stmt - the AlterPolicyStmt that describes the policy and how to alter it.
+ * pstate - supplies source text and provenances
  */
 ObjectAddress
-AlterPolicy(AlterPolicyStmt *stmt)
+AlterPolicy(ParseState *pstate, AlterPolicyStmt *stmt)
 {
 	Relation	pg_policy_rel;
 	Oid			policy_id;
@@ -813,6 +823,8 @@ AlterPolicy(AlterPolicyStmt *stmt)
 		ParseNamespaceItem *nsitem;
 		ParseState *qual_pstate = make_parsestate(NULL);
 
+		qual_pstate->p_provenances = pstate->p_provenances;
+
 		nsitem = addRangeTableEntryForRelation(qual_pstate, target_table,
 											   AccessShareLock,
 											   NULL, false, false);
@@ -835,6 +847,8 @@ AlterPolicy(AlterPolicyStmt *stmt)
 	{
 		ParseNamespaceItem *nsitem;
 		ParseState *with_check_pstate = make_parsestate(NULL);
+
+		with_check_pstate->p_provenances = pstate->p_provenances;
 
 		nsitem = addRangeTableEntryForRelation(with_check_pstate, target_table,
 											   AccessShareLock,
@@ -977,11 +991,11 @@ AlterPolicy(AlterPolicyStmt *stmt)
 			char	   *qual_value;
 			ParseState *qual_pstate;
 
-			/* parsestate is built just to build the range table */
+			/* parsestate is needed for range table and provenances */
 			qual_pstate = make_parsestate(NULL);
 
 			qual_value = TextDatumGetCString(value_datum);
-			qual = stringToNode(qual_value);
+			qual = stringToNode(qual_value, PI_NEVER_EXECUTED);
 
 			/* Add this rel to the parsestate's rangetable, for dependencies */
 			(void) addRangeTableEntryForRelation(qual_pstate, target_table,
@@ -1023,7 +1037,8 @@ AlterPolicy(AlterPolicyStmt *stmt)
 			with_check_pstate = make_parsestate(NULL);
 
 			with_check_value = TextDatumGetCString(value_datum);
-			with_check_qual = stringToNode(with_check_value);
+			with_check_qual = stringToNode(with_check_value,
+										   PI_NEVER_EXECUTED);
 
 			/* Add this rel to the parsestate's rangetable, for dependencies */
 			(void) addRangeTableEntryForRelation(with_check_pstate,

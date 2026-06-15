@@ -30,16 +30,18 @@
 #include "catalog/toasting.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
 static void CheckAndCreateToastTable(Oid relOid, Datum reloptions,
 									 LOCKMODE lockmode, bool check,
-									 Oid OIDOldToast);
+									 Oid OIDOldToast,
+									 Provenances *provenances);
 static bool create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 							   Datum reloptions, LOCKMODE lockmode, bool check,
-							   Oid OIDOldToast);
+							   Oid OIDOldToast, Provenances *provenances);
 static bool needs_toast_table(Relation rel);
 
 
@@ -56,28 +58,36 @@ static bool needs_toast_table(Relation rel);
  * to end with CommandCounterIncrement if it makes any changes.
  */
 void
-AlterTableCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode)
+AlterTableCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
+						   Provenances *provenances)
 {
-	CheckAndCreateToastTable(relOid, reloptions, lockmode, true, InvalidOid);
+	CheckAndCreateToastTable(relOid, reloptions, lockmode, true, InvalidOid,
+							 provenances);
 }
 
 void
 NewHeapCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
-						Oid OIDOldToast)
+						Oid OIDOldToast, Provenances *provenances)
 {
-	CheckAndCreateToastTable(relOid, reloptions, lockmode, false, OIDOldToast);
+	CheckAndCreateToastTable(relOid, reloptions, lockmode, false, OIDOldToast,
+							 provenances);
 }
 
 void
-NewRelationCreateToastTable(Oid relOid, Datum reloptions)
+NewRelationCreateToastTable(Oid relOid, Datum reloptions,
+							Provenances *provenances)
 {
+	/* Separate parse-time provenances from execution-time provenances. */
+	provenances = InitProvenances(provenances, 0);
+
 	CheckAndCreateToastTable(relOid, reloptions, AccessExclusiveLock, false,
-							 InvalidOid);
+							 InvalidOid, provenances);
 }
 
 static void
 CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
-						 bool check, Oid OIDOldToast)
+						 bool check, Oid OIDOldToast,
+						 Provenances *provenances)
 {
 	Relation	rel;
 
@@ -85,7 +95,7 @@ CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
 
 	/* create_toast_table does all the work */
 	(void) create_toast_table(rel, InvalidOid, InvalidOid, reloptions, lockmode,
-							  check, OIDOldToast);
+							  check, OIDOldToast, provenances);
 
 	table_close(rel, NoLock);
 }
@@ -109,7 +119,8 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 
 	/* create_toast_table does all the work */
 	if (!create_toast_table(rel, toastOid, toastIndexOid, (Datum) 0,
-							AccessExclusiveLock, false, InvalidOid))
+							AccessExclusiveLock, false, InvalidOid,
+							InitProvenancesForBootstrap()))
 		elog(ERROR, "\"%s\" does not require a toast table",
 			 relName);
 
@@ -127,7 +138,7 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 static bool
 create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 				   Datum reloptions, LOCKMODE lockmode, bool check,
-				   Oid OIDOldToast)
+				   Oid OIDOldToast, Provenances *provenances)
 {
 	Oid			relOid = RelationGetRelid(rel);
 	HeapTuple	reltup;
@@ -332,7 +343,8 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 				 BTREE_AM_OID,
 				 rel->rd_rel->reltablespace,
 				 collationIds, opclassIds, NULL, coloptions, NULL, (Datum) 0,
-				 INDEX_CREATE_IS_PRIMARY, 0, true, true, NULL);
+				 INDEX_CREATE_IS_PRIMARY, 0, true, true, NULL,
+				 provenances);
 
 	table_close(toast_rel, NoLock);
 

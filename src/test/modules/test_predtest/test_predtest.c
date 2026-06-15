@@ -62,7 +62,8 @@ test_predtest(PG_FUNCTION_ARGS)
 	 * provides an experimental indication of whether implication or
 	 * refutation holds.
 	 */
-	spiplan = SPI_prepare(query_string, 0, NULL);
+	spiplan = SPI_prepare(query_string, 0, NULL,
+						  InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 	if (spiplan == NULL)
 		elog(ERROR, "SPI_prepare failed for \"%s\"", query_string);
 

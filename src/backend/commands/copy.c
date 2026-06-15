@@ -29,6 +29,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/miscnodes.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -205,7 +206,8 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 			}
 
 			/* Reduce WHERE clause to standard list-of-AND-terms form */
-			whereClause = eval_const_expressions(NULL, whereClause);
+			whereClause = eval_const_expressions(NULL, whereClause,
+												 pstate->p_provenances);
 
 			whereClause = (Node *) canonicalize_qual((Expr *) whereClause, false);
 			whereClause = (Node *) make_ands_implicit((Expr *) whereClause);
@@ -376,6 +378,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 
 		cstate = BeginCopyTo(pstate, rel, query, relid,
 							 stmt->filename, stmt->is_program,
+							 pstate->p_provenances,
 							 NULL, stmt->attlist, stmt->options);
 		*processed = DoCopyTo(cstate);	/* copy from database to file */
 		EndCopyTo(cstate);

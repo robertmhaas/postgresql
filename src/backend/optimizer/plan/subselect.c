@@ -1282,7 +1282,8 @@ convert_VALUES_to_ANY(PlannerInfo *root, Node *testexpr, Query *values)
 		 * Try to evaluate constant expressions.  We could get Const as a
 		 * result.
 		 */
-		value = eval_const_expressions(root, value);
+		value = eval_const_expressions(root, value,
+									   root->glob->provenances);
 
 		/*
 		 * As we only support constant output arrays, all the items must also
@@ -1833,7 +1834,9 @@ simplify_EXISTS_query(PlannerInfo *root, Query *query)
 		 * "LIMIT 1" ... but what we'll actually see is "LIMIT int8(1::int4)",
 		 * so we have to fold constants or we're not going to recognize it.
 		 */
-		Node	   *node = eval_const_expressions(root, query->limitCount);
+		Node	   *node = eval_const_expressions(root,
+												  query->limitCount,
+												  root->glob->provenances);
 		Const	   *limit;
 
 		/* Might as well update the query if we simplified the clause. */
@@ -1979,7 +1982,8 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 	subroot.type = T_PlannerInfo;
 	subroot.glob = root->glob;
 	subroot.parse = subselect;
-	whereClause = eval_const_expressions(&subroot, whereClause);
+	whereClause = eval_const_expressions(&subroot, whereClause,
+										 root->glob->provenances);
 	whereClause = (Node *) canonicalize_qual((Expr *) whereClause, false);
 	whereClause = (Node *) make_ands_implicit((Expr *) whereClause);
 

@@ -542,6 +542,10 @@ IsIndexCompatibleAsArbiter(Relation arbiterIndexRelation,
 			return false;
 	}
 
+	/*
+	 * Since we're only comparing expression trees here and not executing
+	 * them, we need not retrieve or use provenances.
+	 */
 	if (list_difference(RelationGetIndexExpressions(arbiterIndexRelation),
 						RelationGetIndexExpressions(indexRelation)) != NIL)
 		return false;
@@ -1484,6 +1488,17 @@ FormPartitionKeyDatum(PartitionDispatch pd,
 		/* Check caller has set up context correctly */
 		Assert(estate != NULL &&
 			   GetPerTupleExprContext(estate)->ecxt_scantuple == slot);
+
+		/*
+		 * PROVENANCE-TODO: Once we have provenance indexes, we will need to
+		 * make a copy of pd->key->partexprs_provenances here with the indexes
+		 * offset by the return value of AppendProvenances.  (Be careful about
+		 * which memory context to use. Alternatively, should we have a
+		 * version of ExecPrepareExprList that can handle this for us?)
+		 */
+		if (pd->key->partexprs_provenances != NULL)
+			AppendProvenances(estate->es_provenances,
+							  pd->key->partexprs_provenances, 0);
 
 		/* First time through, set up expression evaluation state */
 		pd->keystate = ExecPrepareExprList(pd->key->partexprs, estate);

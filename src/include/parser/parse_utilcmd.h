@@ -23,12 +23,14 @@ extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString);
 extern AlterTableStmt *transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 											   const char *queryString,
 											   List **beforeStmts,
-											   List **afterStmts);
+											   List **afterStmts,
+											   Provenances *provenances);
 extern IndexStmt *transformIndexStmt(Oid relid, IndexStmt *stmt,
-									 const char *queryString);
-extern CreateStatsStmt *transformStatsStmt(Oid relid, CreateStatsStmt *stmt,
-										   const char *queryString);
-extern void transformRuleStmt(RuleStmt *stmt, const char *queryString,
+									 const char *queryString,
+									 Provenances *provenances);
+extern CreateStatsStmt *transformStatsStmt(ParseState *pstate, Oid relid,
+										   CreateStatsStmt *stmt);
+extern void transformRuleStmt(ParseState *pstate, RuleStmt *stmt,
 							  List **actions, Node **whereClause);
 extern List *transformCreateSchemaStmtElements(ParseState *pstate,
 											   List *schemaElts,
@@ -36,7 +38,8 @@ extern List *transformCreateSchemaStmtElements(ParseState *pstate,
 extern PartitionBoundSpec *transformPartitionBound(ParseState *pstate, Relation parent,
 												   PartitionBoundSpec *spec);
 extern List *expandTableLikeClause(RangeVar *heapRel,
-								   TableLikeClause *table_like_clause);
+								   TableLikeClause *table_like_clause,
+								   Provenances *provenances);
 extern IndexStmt *generateClonedIndexStmt(RangeVar *heapRel,
 										  Relation source_idx,
 										  const AttrMap *attmap,

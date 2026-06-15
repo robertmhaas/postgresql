@@ -735,7 +735,8 @@ xpath_table(PG_FUNCTION_ARGS)
 
 	SPI_connect();
 
-	if ((ret = SPI_exec(query_buf.data, 0)) != SPI_OK_SELECT)
+	if ((ret = SPI_exec(query_buf.data, 0,
+						InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner))) != SPI_OK_SELECT)
 		elog(ERROR, "xpath_table: SPI execution failed for query %s",
 			 query_buf.data);
 

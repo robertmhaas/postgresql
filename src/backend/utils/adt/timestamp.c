@@ -6916,9 +6916,9 @@ generate_series_timestamp_support(PG_FUNCTION_ARGS)
 					   *arg3;
 
 			/* We can use estimated argument values here */
-			arg1 = estimate_expression_value(req->root, linitial(args));
-			arg2 = estimate_expression_value(req->root, lsecond(args));
-			arg3 = estimate_expression_value(req->root, lthird(args));
+			arg1 = estimate_expression_value(req->root, linitial(args), NULL);
+			arg2 = estimate_expression_value(req->root, lsecond(args), NULL);
+			arg3 = estimate_expression_value(req->root, lthird(args), NULL);
 
 			/*
 			 * If any argument is constant NULL, we can safely assume that

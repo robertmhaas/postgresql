@@ -347,7 +347,8 @@ expand_partitioned_rtentry(PlannerInfo *root, RelOptInfo *relinfo,
 	 * that survive pruning.  Below, we will initialize child objects for the
 	 * surviving partitions.
 	 */
-	relinfo->live_parts = prune_append_rel_partitions(relinfo);
+	relinfo->live_parts = prune_append_rel_partitions(relinfo,
+													  root->glob->provenances);
 
 	/* Expand simple_rel_array and friends to hold child objects. */
 	num_live_parts = bms_num_members(relinfo->live_parts);
@@ -864,7 +865,8 @@ apply_child_basequals(PlannerInfo *root, RelOptInfo *parentrel,
 		childqual = adjust_appendrel_attrs(root,
 										   (Node *) rinfo->clause,
 										   1, &appinfo);
-		childqual = eval_const_expressions(root, childqual);
+		childqual = eval_const_expressions(root, childqual,
+										   root->glob->provenances);
 		/* check for flat-out constant */
 		if (childqual && IsA(childqual, Const))
 		{

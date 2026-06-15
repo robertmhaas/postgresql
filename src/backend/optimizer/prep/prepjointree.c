@@ -33,6 +33,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/multibitmapset.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/placeholder.h"
@@ -512,7 +513,8 @@ expand_virtual_generated_columns(PlannerInfo *root, Query *parse,
 			{
 				Node	   *defexpr;
 
-				defexpr = build_generation_expression(relation, i + 1);
+				defexpr = build_generation_expression(relation, i + 1,
+													  root->glob->provenances);
 				ChangeVarNodes(defexpr, 1, rt_index, 0);
 
 				tle = makeTargetEntry((Expr *) defexpr, i + 1, 0, false);
@@ -1184,7 +1186,9 @@ preprocess_function_rtes(PlannerInfo *root)
 
 			/* Apply const-simplification */
 			rte->functions = (List *)
-				eval_const_expressions(root, (Node *) rte->functions);
+				eval_const_expressions(root,
+									   (Node *) rte->functions,
+									   root->glob->provenances);
 
 			/* Check safety of expansion, and expand if possible */
 			funcquery = inline_function_in_from(root, rte);

@@ -59,6 +59,7 @@
 #include "commands/view.h"
 #include "commands/wait.h"
 #include "miscadmin.h"
+#include "nodes/provenance.h"
 #include "parser/parse_utilcmd.h"
 #include "postmaster/bgwriter.h"
 #include "rewrite/rewriteDefine.h"
@@ -593,6 +594,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
 	pstate->p_queryEnv = queryEnv;
+	pstate->p_provenances = pstmt->provenances;
 
 	switch (nodeTag(parsetree))
 	{
@@ -733,7 +735,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			break;
 
 		case T_TruncateStmt:
-			ExecuteTruncate((TruncateStmt *) parsetree);
+			ExecuteTruncate(pstate, (TruncateStmt *) parsetree);
 			break;
 
 		case T_CopyStmt:
@@ -856,7 +858,9 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			break;
 
 		case T_CallStmt:
-			ExecuteCallStmt(castNode(CallStmt, parsetree), params, isAtomicContext, dest);
+			ExecuteCallStmt(castNode(CallStmt, parsetree), params,
+							isAtomicContext, dest,
+							pstate->p_provenances);
 			break;
 
 		case T_VacuumStmt:
@@ -1166,7 +1170,7 @@ ProcessUtilitySlow(ParseState *pstate,
 							table_rv = cstmt->relation;
 
 							/* Create the table itself */
-							address = DefineRelation(cstmt,
+							address = DefineRelation(pstate, cstmt,
 													 RELKIND_RELATION,
 													 InvalidOid, NULL,
 													 queryString);
@@ -1195,7 +1199,8 @@ ProcessUtilitySlow(ParseState *pstate,
 												   true);
 
 							NewRelationCreateToastTable(address.objectId,
-														toast_options);
+														toast_options,
+														pstate->p_provenances);
 						}
 						else if (IsA(stmt, CreateForeignTableStmt))
 						{
@@ -1205,7 +1210,8 @@ ProcessUtilitySlow(ParseState *pstate,
 							table_rv = cstmt->base.relation;
 
 							/* Create the table itself */
-							address = DefineRelation(&cstmt->base,
+							address = DefineRelation(pstate,
+													 &cstmt->base,
 													 RELKIND_FOREIGN_TABLE,
 													 InvalidOid, NULL,
 													 queryString);
@@ -1228,7 +1234,9 @@ ProcessUtilitySlow(ParseState *pstate,
 
 							Assert(table_rv != NULL);
 
-							morestmts = expandTableLikeClause(table_rv, like);
+							morestmts =
+								expandTableLikeClause(table_rv, like,
+													  pstate->p_provenances);
 							stmts = list_concat(morestmts, stmts);
 						}
 						else
@@ -1246,6 +1254,7 @@ ProcessUtilitySlow(ParseState *pstate,
 							wrapper->utilityStmt = stmt;
 							wrapper->stmt_location = pstmt->stmt_location;
 							wrapper->stmt_len = pstmt->stmt_len;
+							wrapper->provenances = pstmt->provenances;
 							wrapper->planOrigin = PLAN_STMT_INTERNAL;
 
 							ProcessUtility(wrapper,
@@ -1370,7 +1379,8 @@ ProcessUtilitySlow(ParseState *pstate,
 							address =
 								AlterDomainAddConstraint(stmt->typeName,
 														 stmt->def,
-														 &secondaryObject);
+														 &secondaryObject,
+														 pstate->p_provenances);
 							break;
 						case AD_DropConstraint:
 							address =
@@ -1382,7 +1392,8 @@ ProcessUtilitySlow(ParseState *pstate,
 						case AD_ValidateConstraint:
 							address =
 								AlterDomainValidateConstraint(stmt->typeName,
-															  stmt->name);
+															  stmt->name,
+															  pstate->p_provenances);
 							break;
 						default:	/* oops */
 							elog(ERROR, "unrecognized alter domain type: %d",
@@ -1540,7 +1551,8 @@ ProcessUtilitySlow(ParseState *pstate,
 					is_alter_table = stmt->transformed;
 
 					/* Run parse analysis ... */
-					stmt = transformIndexStmt(relid, stmt, queryString);
+					stmt = transformIndexStmt(relid, stmt, queryString,
+											  pstate->p_provenances);
 
 					/* ... and do it */
 					EventTriggerAlterTableStart(parsetree);
@@ -1630,7 +1642,8 @@ ProcessUtilitySlow(ParseState *pstate,
 				{
 					CompositeTypeStmt *stmt = (CompositeTypeStmt *) parsetree;
 
-					address = DefineCompositeType(stmt->typevar,
+					address = DefineCompositeType(pstate,
+												  stmt->typevar,
 												  stmt->coldeflist);
 				}
 				break;
@@ -1649,7 +1662,8 @@ ProcessUtilitySlow(ParseState *pstate,
 
 			case T_ViewStmt:	/* CREATE VIEW */
 				EventTriggerAlterTableStart(parsetree);
-				address = DefineView((ViewStmt *) parsetree, queryString,
+				address = DefineView(pstate, (ViewStmt *) parsetree,
+									 queryString,
 									 pstmt->stmt_location, pstmt->stmt_len);
 				EventTriggerCollectSimpleCommand(address, secondaryObject,
 												 parsetree);
@@ -1667,7 +1681,7 @@ ProcessUtilitySlow(ParseState *pstate,
 				break;
 
 			case T_RuleStmt:	/* CREATE RULE */
-				address = DefineRule((RuleStmt *) parsetree, queryString);
+				address = DefineRule(pstate, (RuleStmt *) parsetree);
 				break;
 
 			case T_CreateSeqStmt:
@@ -1695,7 +1709,8 @@ ProcessUtilitySlow(ParseState *pstate,
 				PG_TRY(2);
 				{
 					address = ExecRefreshMatView((RefreshMatViewStmt *) parsetree,
-												 queryString, qc);
+												 queryString, qc,
+												 pstate->p_provenances);
 				}
 				PG_FINALLY(2);
 				{
@@ -1708,7 +1723,8 @@ ProcessUtilitySlow(ParseState *pstate,
 				address = CreateTrigger((CreateTrigStmt *) parsetree,
 										queryString, InvalidOid, InvalidOid,
 										InvalidOid, InvalidOid, InvalidOid,
-										InvalidOid, NULL, false, false);
+										InvalidOid, NULL, false, false,
+										pstate->p_provenances);
 				break;
 
 			case T_CreatePLangStmt:
@@ -1839,11 +1855,11 @@ ProcessUtilitySlow(ParseState *pstate,
 				break;
 
 			case T_CreatePolicyStmt:	/* CREATE POLICY */
-				address = CreatePolicy((CreatePolicyStmt *) parsetree);
+				address = CreatePolicy(pstate, (CreatePolicyStmt *) parsetree);
 				break;
 
 			case T_AlterPolicyStmt: /* ALTER POLICY */
-				address = AlterPolicy((AlterPolicyStmt *) parsetree);
+				address = AlterPolicy(pstate, (AlterPolicyStmt *) parsetree);
 				break;
 
 			case T_SecLabelStmt:
@@ -1911,7 +1927,7 @@ ProcessUtilitySlow(ParseState *pstate,
 					relid = RangeVarGetRelid(rel, ShareUpdateExclusiveLock, false);
 
 					/* Run parse analysis ... */
-					stmt = transformStatsStmt(relid, stmt, queryString);
+					stmt = transformStatsStmt(pstate, relid, stmt);
 
 					address = CreateStatistics(stmt, true);
 				}
@@ -1986,6 +2002,7 @@ ProcessUtilityForAlterTable(Node *stmt, AlterTableUtilityContext *context)
 	wrapper->utilityStmt = stmt;
 	wrapper->stmt_location = context->pstmt->stmt_location;
 	wrapper->stmt_len = context->pstmt->stmt_len;
+	wrapper->provenances = context->pstmt->provenances;
 	wrapper->planOrigin = PLAN_STMT_INTERNAL;
 
 	ProcessUtility(wrapper,

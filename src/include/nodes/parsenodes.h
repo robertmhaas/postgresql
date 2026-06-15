@@ -26,6 +26,7 @@
 #include "nodes/bitmapset.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
+#include "nodes/provenance.h"
 #include "nodes/value.h"
 #include "partitioning/partdefs.h"
 
@@ -122,6 +123,7 @@ typedef struct Query
 
 	/* where did I come from? */
 	QuerySource querySource pg_node_attr(query_jumble_ignore);
+
 
 	/*
 	 * query identifier (can be set by plugins); ignored for equal, as it
@@ -3600,6 +3602,7 @@ typedef struct IndexStmt
 										 * of IndexElem */
 	List	   *options;		/* WITH clause options: a list of DefElem */
 	Node	   *whereClause;	/* qualification (partial-index predicate) */
+	Provenances *whereProvenances;	/* provenances for whereClause */
 	List	   *excludeOpNames; /* exclusion operator names, or NIL if none */
 	char	   *idxcomment;		/* comment to apply to index, or NULL */
 	Oid			indexOid;		/* OID of an existing index, if any */
@@ -3731,6 +3734,7 @@ typedef struct InlineCodeBlock
 	Oid			langOid;		/* OID of selected language */
 	bool		langIsTrusted;	/* trusted property of the language */
 	bool		atomic;			/* atomic execution context */
+	Provenances *provenances;	/* provenance */
 } InlineCodeBlock;
 
 /* ----------------------

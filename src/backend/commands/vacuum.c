@@ -44,6 +44,7 @@
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
@@ -127,7 +128,8 @@ static void vac_truncate_clog(TransactionId frozenXID,
 							  TransactionId lastSaneFrozenXid,
 							  MultiXactId lastSaneMinMulti);
 static bool vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
-					   BufferAccessStrategy bstrategy, bool isTopLevel);
+					   BufferAccessStrategy bstrategy, bool isTopLevel,
+					   Provenances *provenances);
 static double compute_parallel_delay(void);
 static VacOptValue get_vacoptval_from_boolean(DefElem *def);
 static bool vac_tid_reaped(ItemPointer itemptr, void *state);
@@ -163,6 +165,7 @@ void
 ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 {
 	VacuumParams params;
+	Provenances *provenances;
 	BufferAccessStrategy bstrategy = NULL;
 	bool		verbose = false;
 	bool		skip_locked = false;
@@ -461,8 +464,12 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 		MemoryContextSwitchTo(old_context);
 	}
 
+	/* Separate parse-time provenances from execution-time provenances. */
+	provenances = InitProvenances(pstate->p_provenances, 0);
+
 	/* Now go through the common routine */
-	vacuum(vacstmt->rels, &params, bstrategy, vac_context, isTopLevel);
+	vacuum(vacstmt->rels, &params, bstrategy, vac_context, isTopLevel,
+		   provenances);
 
 	/* Finally, clean up the vacuum memory context */
 	MemoryContextDelete(vac_context);
@@ -492,7 +499,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
  */
 void
 vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrategy,
-	   MemoryContext vac_context, bool isTopLevel)
+	   MemoryContext vac_context, bool isTopLevel, Provenances *provenances)
 {
 	static bool in_vacuum = false;
 
@@ -631,7 +638,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 			if (params->options & VACOPT_VACUUM)
 			{
 				if (!vacuum_rel(vrel->oid, vrel->relation, *params, bstrategy,
-								isTopLevel))
+								isTopLevel, provenances))
 					continue;
 			}
 
@@ -649,7 +656,8 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 				}
 
 				analyze_rel(vrel->oid, vrel->relation, params,
-							vrel->va_cols, in_outer_xact, bstrategy);
+							vrel->va_cols, in_outer_xact, bstrategy,
+							provenances);
 
 				if (use_own_xacts)
 				{
@@ -2010,7 +2018,8 @@ vac_truncate_clog(TransactionId frozenXID,
  */
 static bool
 vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
-		   BufferAccessStrategy bstrategy, bool isTopLevel)
+		   BufferAccessStrategy bstrategy, bool isTopLevel,
+		   Provenances *provenances)
 {
 	LOCKMODE	lmode;
 	Relation	rel;
@@ -2301,13 +2310,13 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 
 			/* VACUUM FULL is a variant of REPACK; see repack.c */
 			cluster_rel(REPACK_COMMAND_VACUUMFULL, rel, InvalidOid,
-						&cluster_params, isTopLevel);
+						&cluster_params, isTopLevel, provenances);
 			/* cluster_rel closes the relation, but keeps lock */
 
 			rel = NULL;
 		}
 		else
-			table_relation_vacuum(rel, &params, bstrategy);
+			table_relation_vacuum(rel, &params, bstrategy, provenances);
 	}
 
 	/* Roll back any GUC changes executed by index functions */
@@ -2345,7 +2354,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 		toast_vacuum_params.toast_parent = relid;
 
 		vacuum_rel(toast_relid, NULL, toast_vacuum_params, bstrategy,
-				   isTopLevel);
+				   isTopLevel, provenances);
 	}
 
 	/*

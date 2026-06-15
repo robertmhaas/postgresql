@@ -40,7 +40,9 @@
 #include "foreign/fdwapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "nodes/miscnodes.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
@@ -808,6 +810,9 @@ CopyFrom(CopyFromState cstate)
 	if (cstate->opts.on_error != COPY_ON_ERROR_STOP)
 		Assert(cstate->escontext);
 
+	/* Execution provenance is passed via CopyFromState. */
+	estate->es_provenances = copyObject(cstate->provenances);
+
 	/*
 	 * The target must be a plain, foreign, or partitioned relation, or have
 	 * an INSTEAD OF INSERT row trigger.  (Currently, such triggers are only
@@ -1563,6 +1568,9 @@ BeginCopyFrom(ParseState *pstate,
 		0
 	};
 
+	Assert(pstate != NULL);
+	Assert(pstate->p_provenances != NULL);
+
 	/* Allocate workspace and zero all fields */
 	cstate = palloc0_object(CopyFromStateData);
 
@@ -1735,6 +1743,7 @@ BeginCopyFrom(ParseState *pstate,
 	cstate->copy_src = COPY_FILE;	/* default */
 
 	cstate->whereClause = whereClause;
+	cstate->provenances = pstate->p_provenances;
 
 	/* Initialize state variables */
 	cstate->eol_type = EOL_UNKNOWN;
@@ -1803,13 +1812,18 @@ BeginCopyFrom(ParseState *pstate,
 			 !list_member_int(cstate->attnumlist, attnum)) &&
 			!att->attgenerated)
 		{
-			Expr	   *defexpr = (Expr *) build_column_default(cstate->rel,
-																attnum);
+			Expr	   *defexpr;
+
+			/* Ensure we have a provenances object for defaults. */
+			defexpr = (Expr *) build_column_default(cstate->rel,
+													attnum,
+													cstate->provenances);
 
 			if (defexpr != NULL)
 			{
 				/* Run the expression through planner */
-				defexpr = expression_planner(defexpr);
+				defexpr = expression_planner(defexpr,
+											 cstate->provenances);
 
 				/* Initialize executable expression in copycontext */
 				defexprs[attnum - 1] = ExecInitExpr(defexpr, NULL);

@@ -17,6 +17,7 @@
 #include "access/table.h"
 #include "commands/copy.h"
 #include "fmgr.h"
+#include "nodes/provenance.h"
 #include "utils/rel.h"
 
 PG_MODULE_MAGIC;
@@ -38,7 +39,8 @@ test_copy_to_callback(PG_FUNCTION_ARGS)
 	int64		processed;
 
 	cstate = BeginCopyTo(NULL, rel, NULL, RelationGetRelid(rel), NULL, false,
-						 to_cb, NIL, NIL);
+						 InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner), to_cb, NIL,
+						 NIL);
 	processed = DoCopyTo(cstate);
 	EndCopyTo(cstate);
 

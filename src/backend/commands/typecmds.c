@@ -59,6 +59,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -128,14 +129,18 @@ static Oid	findTypeSubscriptingFunction(List *procname, Oid typeOid);
 static Oid	findRangeSubOpclass(List *opcname, Oid subtype);
 static Oid	findRangeCanonicalFunction(List *procname, Oid typeOid);
 static Oid	findRangeSubtypeDiffFunction(List *procname, Oid subtype);
-static void validateDomainCheckConstraint(Oid domainoid, const char *ccbin, LOCKMODE lockmode);
+static void validateDomainCheckConstraint(Oid domainoid, Expr *expr,
+										  LOCKMODE lockmode,
+										  Provenances *provenances);
 static void validateDomainNotNullConstraint(Oid domainoid);
 static List *get_rels_with_domain(Oid domainOid, LOCKMODE lockmode);
 static void checkEnumOwner(HeapTuple tup);
-static char *domainAddCheckConstraint(Oid domainOid, Oid domainNamespace,
+static Expr *domainAddCheckConstraint(Oid domainOid, Oid domainNamespace,
 									  Oid baseTypeOid,
 									  int typMod, Constraint *constr,
-									  const char *domainName, ObjectAddress *constrAddr);
+									  const char *domainName,
+									  ObjectAddress *constrAddr,
+									  Provenances *provenances);
 static Node *replace_domain_constraint_value(ParseState *pstate,
 											 ColumnRef *cref);
 static void domainAddNotNullConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
@@ -1147,7 +1152,8 @@ DefineDomain(ParseState *pstate, CreateDomainStmt *stmt)
 			case CONSTR_CHECK:
 				domainAddCheckConstraint(address.objectId, domainNamespace,
 										 basetypeoid, basetypeMod,
-										 constr, domainName, NULL);
+										 constr, domainName, NULL,
+										 pstate->p_provenances);
 				break;
 
 			case CONSTR_NOTNULL:
@@ -2585,7 +2591,7 @@ AssignTypeMultirangeArrayOid(void)
  *-------------------------------------------------------------------
  */
 ObjectAddress
-DefineCompositeType(RangeVar *typevar, List *coldeflist)
+DefineCompositeType(ParseState *pstate, RangeVar *typevar, List *coldeflist)
 {
 	CreateStmt *createStmt = makeNode(CreateStmt);
 	Oid			old_type_oid;
@@ -2629,8 +2635,8 @@ DefineCompositeType(RangeVar *typevar, List *coldeflist)
 	/*
 	 * Finally create the relation.  This also creates the type.
 	 */
-	DefineRelation(createStmt, RELKIND_COMPOSITE_TYPE, InvalidOid, &address,
-				   NULL);
+	DefineRelation(pstate, createStmt, RELKIND_COMPOSITE_TYPE, InvalidOid,
+				   &address, NULL);
 
 	return address;
 }
@@ -2965,7 +2971,8 @@ AlterDomainDropConstraint(List *names, const char *constrName,
  */
 ObjectAddress
 AlterDomainAddConstraint(List *names, Node *newConstraint,
-						 ObjectAddress *constrAddr)
+						 ObjectAddress *constrAddr,
+						 Provenances *provenances)
 {
 	TypeName   *typename;
 	Oid			domainoid;
@@ -2973,7 +2980,7 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 	HeapTuple	tup;
 	Form_pg_type typTup;
 	Constraint *constr;
-	char	   *ccbin;
+	Expr	   *expr;
 	ObjectAddress address = InvalidObjectAddress;
 
 	/* Make a TypeName so we can use standard type lookup machinery */
@@ -3007,9 +3014,10 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 		 * pg_constraint.
 		 */
 
-		ccbin = domainAddCheckConstraint(domainoid, typTup->typnamespace,
-										 typTup->typbasetype, typTup->typtypmod,
-										 constr, NameStr(typTup->typname), constrAddr);
+		expr = domainAddCheckConstraint(domainoid, typTup->typnamespace,
+										typTup->typbasetype, typTup->typtypmod,
+										constr, NameStr(typTup->typname),
+										constrAddr, provenances);
 
 
 		/*
@@ -3018,7 +3026,12 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 		 * to.
 		 */
 		if (!constr->skip_validation)
-			validateDomainCheckConstraint(domainoid, ccbin, ShareLock);
+		{
+			Provenances *exec_provenances = copyObject(provenances);
+
+			validateDomainCheckConstraint(domainoid, expr, ShareLock,
+										  exec_provenances);
+		}
 
 		/*
 		 * We must send out an sinval message for the domain, to ensure that
@@ -3064,7 +3077,8 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
  * was already validated, InvalidObjectAddress is returned.
  */
 ObjectAddress
-AlterDomainValidateConstraint(List *names, const char *constrName)
+AlterDomainValidateConstraint(List *names, const char *constrName,
+							  Provenances *provenances)
 {
 	TypeName   *typename;
 	Oid			domainoid;
@@ -3132,15 +3146,31 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 
 	if (!con->convalidated)
 	{
+		Form_pg_type typTup = (Form_pg_type) GETSTRUCT(tup);
+		Provenances *exec_provenances;
+		ProvenanceIndex pidx;
+
 		val = SysCacheGetAttrNotNull(CONSTROID, tuple, Anum_pg_constraint_conbin);
 		conbin = TextDatumGetCString(val);
+
+		/*
+		 * Build an execution-context provenances for the constraint we're
+		 * about to validate. The constraint expression was read from the
+		 * catalog, so record the constraint in the provenance chain.
+		 */
+		exec_provenances = InitProvenances(provenances, 0);
+		pidx = ProvenanceForConstraint(exec_provenances, con->oid,
+									   typTup->typowner, 0);
 
 		/*
 		 * Locking related relations with ShareUpdateExclusiveLock is ok
 		 * because not-yet-valid constraints are still enforced against
 		 * concurrent inserts or updates.
 		 */
-		validateDomainCheckConstraint(domainoid, conbin, ShareUpdateExclusiveLock);
+		validateDomainCheckConstraint(domainoid,
+									  (Expr *) stringToNode(conbin, pidx),
+									  ShareUpdateExclusiveLock,
+									  exec_provenances);
 
 		/*
 		 * Now update the catalog, while we have the door open.
@@ -3242,11 +3272,14 @@ validateDomainNotNullConstraint(Oid domainoid)
  * The lockmode is used for relations using the domain.  It should be
  * ShareLock when adding a new constraint to domain.  It can be
  * ShareUpdateExclusiveLock when validating an existing constraint.
+ *
+ * The supplied provenances object should be the correct execution context
+ * for the constraint expression.
  */
 static void
-validateDomainCheckConstraint(Oid domainoid, const char *ccbin, LOCKMODE lockmode)
+validateDomainCheckConstraint(Oid domainoid, Expr *expr,
+							  LOCKMODE lockmode, Provenances *provenances)
 {
-	Expr	   *expr = (Expr *) stringToNode(ccbin);
 	List	   *rels;
 	ListCell   *rt;
 	EState	   *estate;
@@ -3255,6 +3288,7 @@ validateDomainCheckConstraint(Oid domainoid, const char *ccbin, LOCKMODE lockmod
 
 	/* Need an EState to run ExecEvalExpr */
 	estate = CreateExecutorState();
+	estate->es_provenances = provenances;
 	econtext = GetPerTupleExprContext(estate);
 
 	/* build execution state for expr */
@@ -3552,10 +3586,11 @@ checkDomainOwner(HeapTuple tup)
 /*
  * domainAddCheckConstraint - code shared between CREATE and ALTER DOMAIN
  */
-static char *
+static Expr *
 domainAddCheckConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
 						 int typMod, Constraint *constr,
-						 const char *domainName, ObjectAddress *constrAddr)
+						 const char *domainName, ObjectAddress *constrAddr,
+						 Provenances *provenances)
 {
 	Node	   *expr;
 	char	   *ccbin;
@@ -3589,6 +3624,7 @@ domainAddCheckConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
 	 * Convert the A_EXPR in raw_expr into an EXPR
 	 */
 	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
 
 	/*
 	 * Set up a CoerceToDomainValue to represent the occurrence of VALUE in
@@ -3677,7 +3713,7 @@ domainAddCheckConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
 	 * Return the compiled constraint expression so the calling routine can
 	 * perform any additional required tests.
 	 */
-	return ccbin;
+	return (Expr *) expr;
 }
 
 /* Parser pre_columnref_hook for domain CHECK constraint parsing */

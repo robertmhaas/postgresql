@@ -2737,6 +2737,7 @@ ExecInitWindowAgg(WindowAgg *node, EState *estate, int eflags)
 			elog(ERROR, "WindowFunc with winref %u assigned to WindowAgg with winref %u",
 				 wfunc->winref, node->winref);
 
+
 		/*
 		 * Look for a previous duplicate window function, which needs the same
 		 * ignore_nulls value
@@ -2956,6 +2957,8 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 	Datum		textInitVal;
 	int			i;
 	ListCell   *lc;
+	Oid			aggOwner = get_func_owner(wfunc->winfnoid);
+	ProvenanceIndex agg_pidx;
 
 	numArguments = list_length(wfunc->args);
 
@@ -3030,17 +3033,6 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 
 	/* Check that aggregate owner has permission to call component fns */
 	{
-		HeapTuple	procTuple;
-		Oid			aggOwner;
-
-		procTuple = SearchSysCache1(PROCOID,
-									ObjectIdGetDatum(wfunc->winfnoid));
-		if (!HeapTupleIsValid(procTuple))
-			elog(ERROR, "cache lookup failed for function %u",
-				 wfunc->winfnoid);
-		aggOwner = ((Form_pg_proc) GETSTRUCT(procTuple))->proowner;
-		ReleaseSysCache(procTuple);
-
 		aclresult = object_aclcheck(ProcedureRelationId, transfn_oid, aggOwner,
 									ACL_EXECUTE);
 		if (aclresult != ACLCHECK_OK)
@@ -3080,6 +3072,10 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 				 errmsg("aggregate function %s does not support use as a window function",
 						format_procedure(wfunc->winfnoid))));
 
+	/* Extend provenance chain for aggregate's pg_proc entry. */
+	agg_pidx = ProvenanceForFunction(winstate->ss.ps.state->es_provenances,
+									 wfunc->winfnoid, aggOwner, wfunc->pidx);
+
 	/* Detect how many arguments to pass to the finalfn */
 	if (finalextra)
 		peraggstate->numFinalArgs = numArguments + 1;
@@ -3102,7 +3098,8 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 								 transfn_oid,
 								 invtransfn_oid,
 								 &transfnexpr,
-								 &invtransfnexpr);
+								 &invtransfnexpr,
+								 agg_pidx);
 
 	/* set up infrastructure for calling the transfn(s) and finalfn */
 	fmgr_info(transfn_oid, &peraggstate->transfn);
@@ -3122,7 +3119,8 @@ initialize_peragg(WindowAggState *winstate, WindowFunc *wfunc,
 									 wfunc->wintype,
 									 wfunc->inputcollid,
 									 finalfn_oid,
-									 &finalfnexpr);
+									 &finalfnexpr,
+									 agg_pidx);
 		fmgr_info(finalfn_oid, &peraggstate->finalfn);
 		fmgr_info_set_expr((Node *) finalfnexpr, &peraggstate->finalfn);
 	}

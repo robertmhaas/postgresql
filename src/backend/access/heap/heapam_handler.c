@@ -1150,7 +1150,8 @@ heapam_index_build_range_scan(Relation heapRelation,
 							  BlockNumber numblocks,
 							  IndexBuildCallback callback,
 							  void *callback_state,
-							  TableScanDesc scan)
+							  TableScanDesc scan,
+							  Provenances *provenances)
 {
 	HeapScanDesc hscan;
 	bool		is_system_catalog;
@@ -1193,6 +1194,7 @@ heapam_index_build_range_scan(Relation heapRelation,
 	 * predicates.  Also a slot to hold the current tuple.
 	 */
 	estate = CreateExecutorState();
+	estate->es_provenances = provenances;
 	econtext = GetPerTupleExprContext(estate);
 	slot = table_slot_create(heapRelation, NULL);
 
@@ -1719,7 +1721,8 @@ heapam_index_validate_scan(Relation heapRelation,
 						   Relation indexRelation,
 						   IndexInfo *indexInfo,
 						   Snapshot snapshot,
-						   ValidateIndexState *state)
+						   ValidateIndexState *state,
+						   Provenances *provenances)
 {
 	TableScanDesc scan;
 	HeapScanDesc hscan;
@@ -1750,6 +1753,7 @@ heapam_index_validate_scan(Relation heapRelation,
 	 * predicates.  Also a slot to hold the current tuple.
 	 */
 	estate = CreateExecutorState();
+	estate->es_provenances = provenances;
 	econtext = GetPerTupleExprContext(estate);
 	slot = MakeSingleTupleTableSlot(RelationGetDescr(heapRelation),
 									&TTSOpsHeapTuple);

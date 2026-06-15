@@ -3314,10 +3314,34 @@ static Node *
 makeJsonByteaToTextConversion(Node *expr, JsonFormat *format, int location)
 {
 	Const	   *encoding = getJsonEncodingConst(format);
-	FuncExpr   *fexpr = makeFuncExpr(F_CONVERT_FROM, TEXTOID,
-									 list_make2(expr, encoding),
-									 InvalidOid, InvalidOid,
-									 COERCE_EXPLICIT_CALL);
+	FuncExpr   *fexpr;
+
+	/*
+	 * We pass the root provenance index here. That is because:
+	 *
+	 * (1) There is no catalog lookup that influences what function is called;
+	 * it's always F_CONVERT_FROM.
+	 *
+	 * (2) This is only used when transforming a statement, not for example
+	 * when dealing with node trees that may have come from other catalogs.
+	 *
+	 * The provenance doesn't have to be the session, because the statement
+	 * may, for example, occur inside of a function. However, in that case,
+	 * the function should be the root of the caller's provenance chain, and
+	 * so blaming it for the call to F_CONVERT_FROM here feels mostly correct.
+	 *
+	 * However, it is a surprising outcome in the sense that no call to
+	 * convert_from() appears within the statement text, so possibly we should
+	 * consider introducing an additional provenance hop to somehow denote
+	 * that. What would it be, though? Type bytea is a possible answer but
+	 * doesn't seem correct given that this is json-specific, or we could
+	 * introduce some other kind of dummy provenance with this specific
+	 * meaning.
+	 */
+	fexpr = makeFuncExpr(F_CONVERT_FROM, TEXTOID,
+						 list_make2(expr, encoding),
+						 InvalidOid, InvalidOid,
+						 COERCE_EXPLICIT_CALL, 0);
 
 	fexpr->location = location;
 
@@ -3450,6 +3474,7 @@ transformJsonValueExpr(ParseState *pstate, const char *constructName,
 			/* If coercion failed, use to_json()/to_jsonb() functions. */
 			FuncExpr   *fexpr;
 			Oid			fnoid;
+			ProvenanceIndex pidx;
 
 			/*
 			 * Though only allow a cast when the target type is specified by
@@ -3464,8 +3489,20 @@ transformJsonValueExpr(ParseState *pstate, const char *constructName,
 						 parser_errposition(pstate, location)));
 
 			fnoid = targettype == JSONOID ? F_TO_JSON : F_TO_JSONB;
+
+			/*
+			 * The expression we're transforming comes from the query, so it
+			 * should have root provenance. The choice of what function to
+			 * call is determined by targettype.
+			 */
+			pidx = ProvenanceForType(pstate->p_provenances,
+									 targettype,
+									 get_typowner(targettype),
+									 0);
+
 			fexpr = makeFuncExpr(fnoid, targettype, list_make1(expr),
-								 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+								 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL,
+								 pidx);
 
 			fexpr->location = location;
 
@@ -3659,10 +3696,16 @@ coerceJsonFuncExpr(ParseState *pstate, Node *expr,
 		Node	   *texpr = coerce_to_specific_type(pstate, expr, TEXTOID,
 													"JSON_FUNCTION");
 		Const	   *enc = getJsonEncodingConst(returning->format);
-		FuncExpr   *fexpr = makeFuncExpr(F_CONVERT_TO, BYTEAOID,
-										 list_make2(texpr, enc),
-										 InvalidOid, InvalidOid,
-										 COERCE_EXPLICIT_CALL);
+		FuncExpr   *fexpr;
+
+		/*
+		 * We pass the root provenance index here for the same reasons as in
+		 * makeJsonByteaToTextConversion, namely that the choice of function
+		 * is hard-coded, so there's no other catalog object to blame, and
+		 * index 0 should be the provenance of the statement itself.
+		 */
+		fexpr = makeFuncExpr(F_CONVERT_TO, BYTEAOID, list_make2(texpr, enc),
+							 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL, 0);
 
 		fexpr->location = location;
 

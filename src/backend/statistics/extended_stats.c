@@ -27,7 +27,9 @@
 #include "commands/progress.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "pgstat.h"
@@ -74,7 +76,8 @@ typedef struct StatExtEntry
 } StatExtEntry;
 
 
-static List *fetch_statentries_for_relation(Relation pg_statext, Relation rel);
+static List *fetch_statentries_for_relation(Relation pg_statext, Relation rel,
+											Provenances *provenances);
 static VacAttrStats **lookup_var_attr_stats(Bitmapset *attrs, List *exprs,
 											int nvacatts, VacAttrStats **vacatts);
 static void statext_store(Oid statOid, bool inh,
@@ -91,14 +94,16 @@ typedef struct AnlExprData
 } AnlExprData;
 
 static void compute_expr_stats(Relation onerel, AnlExprData *exprdata,
-							   int nexprs, HeapTuple *rows, int numrows);
+							   int nexprs, HeapTuple *rows, int numrows,
+							   Provenances *provenances);
 static Datum serialize_expr_stats(AnlExprData *exprdata, int nexprs);
 static Datum expr_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 static AnlExprData *build_expr_data(List *exprs, int stattarget);
 
 static StatsBuildData *make_build_data(Relation rel, StatExtEntry *stat,
 									   int numrows, HeapTuple *rows,
-									   VacAttrStats **stats, int stattarget);
+									   VacAttrStats **stats, int stattarget,
+									   Provenances *provenances);
 
 
 /*
@@ -107,11 +112,13 @@ static StatsBuildData *make_build_data(Relation rel, StatExtEntry *stat,
  *
  * This fetches a list of stats types from pg_statistic_ext, computes the
  * requested stats, and serializes them back into the catalog.
+ *
  */
 void
 BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 						   int numrows, HeapTuple *rows,
-						   int natts, VacAttrStats **vacattrstats)
+						   int natts, VacAttrStats **vacattrstats,
+						   Provenances *provenances)
 {
 	Relation	pg_stext;
 	ListCell   *lc;
@@ -126,7 +133,8 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 
 	/* the list of stats has to be allocated outside the memory context */
 	pg_stext = table_open(StatisticExtRelationId, RowExclusiveLock);
-	statslist = fetch_statentries_for_relation(pg_stext, onerel);
+	statslist = fetch_statentries_for_relation(pg_stext, onerel,
+											   provenances);
 
 	/* memory context for building each statistics object */
 	cxt = AllocSetContextCreate(CurrentMemoryContext,
@@ -195,7 +203,8 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 			continue;
 
 		/* evaluate expressions (if the statistics object has any) */
-		data = make_build_data(onerel, stat, numrows, rows, stats, stattarget);
+		data = make_build_data(onerel, stat, numrows, rows, stats,
+							   stattarget, provenances);
 
 		/* compute statistic of each requested type */
 		foreach(lc2, stat->types)
@@ -220,7 +229,8 @@ BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 				exprdata = build_expr_data(stat->exprs, stattarget);
 				nexprs = list_length(stat->exprs);
 
-				compute_expr_stats(onerel, exprdata, nexprs, rows, numrows);
+				compute_expr_stats(onerel, exprdata, nexprs, rows, numrows,
+								   provenances);
 
 				exprstats = serialize_expr_stats(exprdata, nexprs);
 			}
@@ -295,7 +305,8 @@ HasRelationExtStatistics(Relation onerel)
  */
 int
 ComputeExtStatisticsRows(Relation onerel,
-						 int natts, VacAttrStats **vacattrstats)
+						 int natts, VacAttrStats **vacattrstats,
+						 Provenances *provenances)
 {
 	Relation	pg_stext;
 	ListCell   *lc;
@@ -314,7 +325,8 @@ ComputeExtStatisticsRows(Relation onerel,
 	oldcxt = MemoryContextSwitchTo(cxt);
 
 	pg_stext = table_open(StatisticExtRelationId, RowExclusiveLock);
-	lstats = fetch_statentries_for_relation(pg_stext, onerel);
+	lstats = fetch_statentries_for_relation(pg_stext, onerel,
+											provenances);
 
 	foreach(lc, lstats)
 	{
@@ -451,7 +463,8 @@ statext_is_kind_built(HeapTuple htup, char type)
  * Return a list (of StatExtEntry) of statistics objects for the given relation.
  */
 static List *
-fetch_statentries_for_relation(Relation pg_statext, Relation rel)
+fetch_statentries_for_relation(Relation pg_statext, Relation rel,
+							   Provenances *provenances)
 {
 	SysScanDesc scan;
 	ScanKeyData skey;
@@ -521,14 +534,19 @@ fetch_statentries_for_relation(Relation pg_statext, Relation rel)
 		if (!isnull)
 		{
 			char	   *exprsString;
+			ProvenanceIndex pidx;
 
+			pidx = ProvenanceForStatistics(provenances, entry->statOid,
+										   staForm->stxowner, 0);
 			exprsString = TextDatumGetCString(datum);
-			exprs = (List *) stringToNode(exprsString);
+			exprs = (List *) stringToNode(exprsString, pidx);
 
 			pfree(exprsString);
 
 			/* Expand virtual generated columns in the expressions */
-			exprs = (List *) expand_generated_columns_in_expr((Node *) exprs, rel, 1);
+			exprs = (List *)
+				expand_generated_columns_in_expr((Node *) exprs, rel, 1,
+												 provenances);
 
 			/*
 			 * Run the expressions through eval_const_expressions. This is not
@@ -538,7 +556,8 @@ fetch_statentries_for_relation(Relation pg_statext, Relation rel)
 			 * canonicalize_qual, however, since these aren't qual
 			 * expressions.
 			 */
-			exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+			exprs = (List *) eval_const_expressions(NULL, (Node *) exprs,
+													provenances);
 
 			/* May as well fix opfuncids too */
 			fix_opfuncids((Node *) exprs);
@@ -2134,7 +2153,8 @@ examine_opclause_args(List *args, Node **exprp, Const **cstp,
  */
 static void
 compute_expr_stats(Relation onerel, AnlExprData *exprdata, int nexprs,
-				   HeapTuple *rows, int numrows)
+				   HeapTuple *rows, int numrows,
+				   Provenances *provenances)
 {
 	MemoryContext expr_context,
 				old_context;
@@ -2168,6 +2188,7 @@ compute_expr_stats(Relation onerel, AnlExprData *exprdata, int nexprs,
 		 * of the loop.
 		 */
 		estate = CreateExecutorState();
+		estate->es_provenances = provenances;
 		econtext = GetPerTupleExprContext(estate);
 
 		/* Set up expression evaluation state */
@@ -2505,7 +2526,8 @@ statext_expressions_load(Oid stxoid, bool inh, int idx)
  */
 static StatsBuildData *
 make_build_data(Relation rel, StatExtEntry *stat, int numrows, HeapTuple *rows,
-				VacAttrStats **stats, int stattarget)
+				VacAttrStats **stats, int stattarget,
+				Provenances *provenances)
 {
 	/* evaluated expressions */
 	StatsBuildData *result;
@@ -2612,13 +2634,16 @@ make_build_data(Relation rel, StatExtEntry *stat, int numrows, HeapTuple *rows,
 
 	/* Need an EState for evaluation expressions. */
 	estate = CreateExecutorState();
-	econtext = GetPerTupleExprContext(estate);
+
+	/* Install provenances for these expressions. */
+	estate->es_provenances = provenances;
 
 	/* Need a slot to hold the current heap tuple, too */
 	slot = MakeSingleTupleTableSlot(RelationGetDescr(rel),
 									&TTSOpsHeapTuple);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
+	econtext = GetPerTupleExprContext(estate);
 	econtext->ecxt_scantuple = slot;
 
 	/* Set up expression evaluation state */

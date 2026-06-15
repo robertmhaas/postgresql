@@ -157,7 +157,8 @@ check_primary_key(PG_FUNCTION_ARGS)
 	}
 
 	/* Prepare plan for query */
-	pplan = SPI_prepare(sql.data, nkeys, argtypes);
+	pplan = SPI_prepare(sql.data, nkeys, argtypes,
+						InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 	if (pplan == NULL)
 		/* internal error */
 		elog(ERROR, "check_primary_key: SPI_prepare returned %s", SPI_result_code_string(SPI_result));
@@ -459,7 +460,8 @@ check_foreign_key(PG_FUNCTION_ARGS)
 		}
 
 		/* Prepare plan for query */
-		pplan = SPI_prepare(sql.data, nkeys, argtypes);
+		pplan = SPI_prepare(sql.data, nkeys, argtypes,
+							InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 		if (pplan == NULL)
 			/* internal error */
 			elog(ERROR, "check_foreign_key: SPI_prepare returned %s", SPI_result_code_string(SPI_result));

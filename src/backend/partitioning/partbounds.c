@@ -28,6 +28,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
+#include "nodes/provenance.h"
 #include "parser/parse_coerce.h"
 #include "partitioning/partbounds.h"
 #include "partitioning/partdesc.h"
@@ -229,10 +230,12 @@ static Expr *make_partition_op_expr(PartitionKey key, int keynum,
 									uint16 strategy, Expr *arg1, Expr *arg2);
 static Oid	get_partition_operator(PartitionKey key, int col,
 								   StrategyNumber strategy, bool *need_relabel);
-static List *get_qual_for_hash(Relation parent, PartitionBoundSpec *spec);
-static List *get_qual_for_list(Relation parent, PartitionBoundSpec *spec);
+static List *get_qual_for_hash(Relation parent, PartitionBoundSpec *spec,
+							   Provenances *provenances);
+static List *get_qual_for_list(Relation parent, PartitionBoundSpec *spec,
+							   Provenances *provenances);
 static List *get_qual_for_range(Relation parent, PartitionBoundSpec *spec,
-								bool for_default);
+								bool for_default, Provenances *provenances);
 static void get_range_key_properties(PartitionKey key, int keynum,
 									 PartitionRangeDatum *ldatum,
 									 PartitionRangeDatum *udatum,
@@ -244,10 +247,25 @@ static List *get_range_nulltest(PartitionKey key);
 /*
  * get_qual_from_partbound
  *		Given a parser node for partition bound, return the list of executable
- *		expressions as partition constraint
+ *		expressions as partition constraint.
+ *
+ * Any provenances needed for the generated qual will be added to provenances
+ * (which must therefore already be initialized when this function is called).
+ *
+ * PROVENANCE-TODO: The provenance handling of this function and its children
+ * (get_qual_for_XXX) isn't really correct at the moment, and it's not
+ * entirely clear how to make it so. When called from partcache.c, spec's
+ * provenances are parent's partition key, and everything we add from
+ * partexprs also has partition key provenances or something derived
+ * therefrom. But when called from tablecmds.c, spec's provenances are the
+ * ALTER TABLE statement's provenances, and the partexpr-based stuff we add
+ * here should descend from those provenances. So even though all callers pass
+ * provenances, the meaning of the provenances that are passed isn't the same
+ * in all cases.
  */
 List *
-get_qual_from_partbound(Relation parent, PartitionBoundSpec *spec)
+get_qual_from_partbound(Relation parent, PartitionBoundSpec *spec,
+						Provenances *provenances)
 {
 	PartitionKey key = RelationGetPartitionKey(parent);
 	List	   *my_qual = NIL;
@@ -258,17 +276,17 @@ get_qual_from_partbound(Relation parent, PartitionBoundSpec *spec)
 	{
 		case PARTITION_STRATEGY_HASH:
 			Assert(spec->strategy == PARTITION_STRATEGY_HASH);
-			my_qual = get_qual_for_hash(parent, spec);
+			my_qual = get_qual_for_hash(parent, spec, provenances);
 			break;
 
 		case PARTITION_STRATEGY_LIST:
 			Assert(spec->strategy == PARTITION_STRATEGY_LIST);
-			my_qual = get_qual_for_list(parent, spec);
+			my_qual = get_qual_for_list(parent, spec, provenances);
 			break;
 
 		case PARTITION_STRATEGY_RANGE:
 			Assert(spec->strategy == PARTITION_STRATEGY_RANGE);
-			my_qual = get_qual_for_range(parent, spec, false);
+			my_qual = get_qual_for_range(parent, spec, false, provenances);
 			break;
 	}
 
@@ -3242,7 +3260,8 @@ check_new_partition_bound(char *relname, Relation parent,
  */
 void
 check_default_partition_contents(Relation parent, Relation default_rel,
-								 PartitionBoundSpec *new_spec)
+								 PartitionBoundSpec *new_spec,
+								 Provenances *provenances)
 {
 	List	   *new_part_constraints;
 	List	   *def_part_constraints;
@@ -3250,10 +3269,10 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 	ListCell   *lc;
 
 	new_part_constraints = (new_spec->strategy == PARTITION_STRATEGY_LIST)
-		? get_qual_for_list(parent, new_spec)
-		: get_qual_for_range(parent, new_spec, false);
+		? get_qual_for_list(parent, new_spec, provenances)
+		: get_qual_for_range(parent, new_spec, false, provenances);
 	def_part_constraints =
-		get_proposed_default_constraint(new_part_constraints);
+		get_proposed_default_constraint(new_part_constraints, provenances);
 
 	/*
 	 * Map the Vars in the constraint expression from parent's attnos to
@@ -3268,7 +3287,9 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 	 * not contain any row that would belong to the new partition, we can
 	 * avoid scanning the default partition.
 	 */
-	if (PartConstraintImpliedByRelConstraint(default_rel, def_part_constraints))
+	if (PartConstraintImpliedByRelConstraint(default_rel,
+											 def_part_constraints,
+											 provenances))
 	{
 		ereport(DEBUG1,
 				(errmsg_internal("updated partition constraint for default partition \"%s\" is implied by existing constraints",
@@ -3319,7 +3340,8 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 			 * partition, we can avoid scanning the child table.
 			 */
 			if (PartConstraintImpliedByRelConstraint(part_rel,
-													 def_part_constraints))
+													 def_part_constraints,
+													 provenances))
 			{
 				ereport(DEBUG1,
 						(errmsg_internal("updated partition constraint for default partition \"%s\" is implied by existing constraints",
@@ -3355,6 +3377,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 		}
 
 		estate = CreateExecutorState();
+		estate->es_provenances = copyObject(provenances);
 
 		/* Build expression execution states for partition check quals */
 		partqualstate = ExecPrepareExpr(partition_constraint, estate);
@@ -3973,7 +3996,8 @@ make_partition_op_expr(PartitionKey key, int keynum,
  * built-in function satisfies_hash_partition().
  */
 static List *
-get_qual_for_hash(Relation parent, PartitionBoundSpec *spec)
+get_qual_for_hash(Relation parent, PartitionBoundSpec *spec,
+				  Provenances *provenances)
 {
 	PartitionKey key = RelationGetPartitionKey(parent);
 	FuncExpr   *fexpr;
@@ -3983,6 +4007,19 @@ get_qual_for_hash(Relation parent, PartitionBoundSpec *spec)
 	List	   *args;
 	ListCell   *partexprs_item;
 	int			i;
+	ProvenanceIndex pidx;
+
+	/*
+	 * The qual we generate here will incorporate any partition expressions
+	 * that may exist, plus a call to satisfies_hash_partition(). We judge the
+	 * provenance of the latter to be the relation whose partitioning scheme
+	 * causes us to generate it.
+	 *
+	 * PROVENANCE-TODO: Something's wrong here.
+	 */
+	if (key->partexprs_provenances != NULL)
+		AppendProvenances(provenances, key->partexprs_provenances, 0);
+	pidx = ProvenanceForPartitionKey(provenances, parent, 0);
 
 	/* Fixed arguments. */
 	relidConst = (Node *) makeConst(OIDOID,
@@ -4041,7 +4078,8 @@ get_qual_for_hash(Relation parent, PartitionBoundSpec *spec)
 						 args,
 						 InvalidOid,
 						 InvalidOid,
-						 COERCE_EXPLICIT_CALL);
+						 COERCE_EXPLICIT_CALL,
+						 pidx);
 
 	return list_make1(fexpr);
 }
@@ -4056,7 +4094,8 @@ get_qual_for_hash(Relation parent, PartitionBoundSpec *spec)
  * partition since in that case there is no constraint.
  */
 static List *
-get_qual_for_list(Relation parent, PartitionBoundSpec *spec)
+get_qual_for_list(Relation parent, PartitionBoundSpec *spec,
+				  Provenances *provenances)
 {
 	PartitionKey key = RelationGetPartitionKey(parent);
 	List	   *result;
@@ -4082,7 +4121,11 @@ get_qual_for_list(Relation parent, PartitionBoundSpec *spec)
 								  key->parttypcoll[0],
 								  0);
 	else
+	{
 		keyCol = (Expr *) copyObject(linitial(key->partexprs));
+		if (key->partexprs_provenances != NULL)
+			AppendProvenances(provenances, key->partexprs_provenances, 0);
+	}
 
 	/*
 	 * For default list partition, collect datums for all the partitions. The
@@ -4152,9 +4195,11 @@ get_qual_for_list(Relation parent, PartitionBoundSpec *spec)
 	if (elems)
 	{
 		/*
-		 * Generate the operator expression from the non-null partition
-		 * values.
+		 * The provenance for the portion of a partition qual that is
+		 * generated by the system itself is the relation that causes it to be
+		 * generated.
 		 */
+		ProvenanceForPartitionKey(provenances, parent, 0);
 		opexpr = make_partition_op_expr(key, 0, BTEqualStrategyNumber,
 										keyCol, (Expr *) elems);
 	}
@@ -4266,7 +4311,7 @@ get_qual_for_list(Relation parent, PartitionBoundSpec *spec)
  */
 static List *
 get_qual_for_range(Relation parent, PartitionBoundSpec *spec,
-				   bool for_default)
+				   bool for_default, Provenances *provenances)
 {
 	List	   *result = NIL;
 	ListCell   *cell1,
@@ -4289,6 +4334,27 @@ get_qual_for_range(Relation parent, PartitionBoundSpec *spec,
 			   *upper_or_start_datum;
 	bool		need_next_lower_arm,
 				need_next_upper_arm;
+	ProvenanceIndex pidx;
+
+	/*
+	 * If any of the partition keys are expressions, we must add the
+	 * associated provenances to the caller's list. Note that every path
+	 * through this function is guaranteed to add key->partexprs to the result
+	 * at least once, because at a very minimum, we're going to need to test
+	 * that the partitioning key is not null.
+	 */
+	if (key->partexprs_provenances != NULL)
+		AppendProvenances(provenances, key->partexprs_provenances, 0);
+
+	/*
+	 * It isn't 100% guaranteed that the expression tree will contain any
+	 * operators beyond what is present in key->partexprs_provenances; a
+	 * partition that runs from MINVALUE to MAXVALUE needs only the null test.
+	 * But, it's not worth optimizing for that case. Instead, add a provenance
+	 * entry unconditionally for the parent relation, which is responsible for
+	 * any operators that we introduce via make_partition_op_expr.
+	 */
+	pidx = ProvenanceForPartitionKey(provenances, parent, 0);
 
 	if (spec->is_default)
 	{
@@ -4312,7 +4378,7 @@ get_qual_for_range(Relation parent, PartitionBoundSpec *spec,
 			datum = SysCacheGetAttrNotNull(RELOID, tuple,
 										   Anum_pg_class_relpartbound);
 			bspec = (PartitionBoundSpec *)
-				stringToNode(TextDatumGetCString(datum));
+				stringToNode(TextDatumGetCString(datum), pidx);
 			if (!IsA(bspec, PartitionBoundSpec))
 				elog(ERROR, "expected PartitionBoundSpec");
 
@@ -4320,7 +4386,8 @@ get_qual_for_range(Relation parent, PartitionBoundSpec *spec,
 			{
 				List	   *part_qual;
 
-				part_qual = get_qual_for_range(parent, bspec, true);
+				part_qual = get_qual_for_range(parent, bspec, true,
+											   provenances);
 
 				/*
 				 * AND the constraints of the partition and add to
@@ -5073,7 +5140,8 @@ get_partition_bound_spec(Oid partOid)
 		elog(ERROR, "partition bound for relation %u is null",
 			 partOid);
 
-	boundspec = stringToNode(TextDatumGetCString(datum));
+	/* PROVENANCE-TODO: no provenances available? */
+	boundspec = stringToNode(TextDatumGetCString(datum), -2);
 
 	if (!IsA(boundspec, PartitionBoundSpec))
 		elog(ERROR, "expected PartitionBoundSpec for relation %u",

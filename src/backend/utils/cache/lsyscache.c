@@ -44,6 +44,7 @@
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -2155,6 +2156,25 @@ get_func_leakproof(Oid funcid)
 }
 
 /*
+ * get_func_owner
+ *	   Given procedure id, return the function's owner.
+ */
+Oid
+get_func_owner(Oid funcid)
+{
+	HeapTuple	tp;
+	Oid			result;
+
+	tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for function %u", funcid);
+
+	result = ((Form_pg_proc) GETSTRUCT(tp))->proowner;
+	ReleaseSysCache(tp);
+	return result;
+}
+
+/*
  * get_func_support
  *
  *		Returns the support function OID associated with a given function,
@@ -2220,6 +2240,29 @@ get_relnatts(Oid relid)
 		return InvalidAttrNumber;
 }
 #endif
+
+/*
+ * get_rel_owner
+ *		Returns the owner of a given relation.
+ */
+Oid
+get_rel_owner(Oid relid)
+{
+	HeapTuple	tp;
+
+	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	if (HeapTupleIsValid(tp))
+	{
+		Form_pg_class reltup = (Form_pg_class) GETSTRUCT(tp);
+		Oid			result;
+
+		result = reltup->relowner;
+		ReleaseSysCache(tp);
+		return result;
+	}
+	else
+		return InvalidOid;
+}
 
 /*
  * get_rel_name
@@ -2544,6 +2587,28 @@ get_typbyval(Oid typid)
 }
 
 /*
+ * get_typowner
+ *
+ *		Get the owner of a type.
+ */
+Oid
+get_typowner(Oid typid)
+{
+	HeapTuple	tp;
+	Form_pg_type typtup;
+	Oid			result;
+
+	tp = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for type %u", typid);
+	typtup = (Form_pg_type) GETSTRUCT(tp);
+	result = typtup->typowner;
+	ReleaseSysCache(tp);
+
+	return result;
+}
+
+/*
  * get_typlenbyval
  *
  *		A two-fer: given the type OID, return both typlen and typbyval.
@@ -2749,11 +2814,14 @@ get_typstorage(Oid typid)
  *	  The result is a palloc'd expression node tree, or NULL if there
  *	  is no defined default for the datatype.
  *
+ * Caller must provide provenances, to which whatever is needed for the
+ * type default will be added.
+ *
  * NB: caller should be prepared to coerce result to correct datatype;
  * the returned expression tree might produce something of the wrong type.
  */
 Node *
-get_typdefault(Oid typid)
+get_typdefault(Oid typid, Provenances *provenances)
 {
 	HeapTuple	typeTuple;
 	Form_pg_type type;
@@ -2779,7 +2847,10 @@ get_typdefault(Oid typid)
 	if (!isNull)
 	{
 		/* We have an expression default */
-		expr = stringToNode(TextDatumGetCString(datum));
+		ProvenanceIndex pidx;
+
+		pidx = ProvenanceForType(provenances, typid, type->typowner, 0);
+		expr = stringToNode(TextDatumGetCString(datum), pidx);
 	}
 	else
 	{

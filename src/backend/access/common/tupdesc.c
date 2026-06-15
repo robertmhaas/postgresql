@@ -395,6 +395,7 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 			memcpy(cpy->check, constr->check, cpy->num_check * sizeof(ConstrCheck));
 			for (i = cpy->num_check - 1; i >= 0; i--)
 			{
+				cpy->check[i].ccoid = constr->check[i].ccoid;
 				cpy->check[i].ccname = pstrdup(constr->check[i].ccname);
 				cpy->check[i].ccbin = pstrdup(constr->check[i].ccbin);
 				cpy->check[i].ccenforced = constr->check[i].ccenforced;
@@ -1158,7 +1159,8 @@ BuildDescFromLists(const List *names, const List *types, const List *typmods, co
  * Get default expression (or NULL if none) for the given attribute number.
  */
 Node *
-TupleDescGetDefault(TupleDesc tupdesc, AttrNumber attnum)
+TupleDescGetDefault(TupleDesc tupdesc, AttrNumber attnum,
+					Provenances *provenances, Oid relowner)
 {
 	Node	   *result = NULL;
 
@@ -1170,7 +1172,12 @@ TupleDescGetDefault(TupleDesc tupdesc, AttrNumber attnum)
 		{
 			if (attrdef[i].adnum == attnum)
 			{
-				result = stringToNode(attrdef[i].adbin);
+				ProvenanceIndex pidx;
+
+				pidx = ProvenanceForAttrDefault(provenances,
+												attrdef[i].adoid,
+												relowner, 0);
+				result = stringToNode(attrdef[i].adbin, pidx);
 				break;
 			}
 		}

@@ -18,6 +18,7 @@
 #include "catalog/objectaddress.h"
 #include "parser/parse_node.h"
 
+typedef struct Provenances Provenances;
 
 /* flag bits for CheckAttributeType/CheckAttributeNamesTypes */
 #define CHKATYPE_ANYARRAY		0x01	/* allow ANYARRAY */
@@ -88,9 +89,9 @@ extern Oid	heap_create_with_catalog(const char *relname,
 
 extern void heap_drop_with_catalog(Oid relid);
 
-extern void heap_truncate(List *relids);
+extern void heap_truncate(List *relids, Provenances *provenances);
 
-extern void heap_truncate_one_rel(Relation rel);
+extern void heap_truncate_one_rel(Relation rel, Provenances *provenances);
 
 extern void heap_truncate_check_FKs(List *relations, bool tempTables);
 
@@ -114,7 +115,8 @@ extern List *AddRelationNewConstraints(Relation rel,
 									   bool allow_merge,
 									   bool is_local,
 									   bool is_internal,
-									   const char *queryString);
+									   const char *queryString,
+									   Provenances *provenances);
 extern List *AddRelationNotNullConstraints(Relation rel,
 										   List *constraints,
 										   List *old_notnulls,

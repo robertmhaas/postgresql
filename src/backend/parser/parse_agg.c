@@ -2257,7 +2257,8 @@ build_aggregate_transfn_expr(Oid *agg_input_types,
 							 Oid transfn_oid,
 							 Oid invtransfn_oid,
 							 Expr **transfnexpr,
-							 Expr **invtransfnexpr)
+							 Expr **invtransfnexpr,
+							 ProvenanceIndex pidx)
 {
 	List	   *args;
 	FuncExpr   *fexpr;
@@ -2279,7 +2280,8 @@ build_aggregate_transfn_expr(Oid *agg_input_types,
 						 args,
 						 InvalidOid,
 						 agg_input_collation,
-						 COERCE_EXPLICIT_CALL);
+						 COERCE_EXPLICIT_CALL,
+						 pidx);
 	fexpr->funcvariadic = agg_variadic;
 	*transfnexpr = (Expr *) fexpr;
 
@@ -2295,7 +2297,8 @@ build_aggregate_transfn_expr(Oid *agg_input_types,
 								 args,
 								 InvalidOid,
 								 agg_input_collation,
-								 COERCE_EXPLICIT_CALL);
+								 COERCE_EXPLICIT_CALL,
+								 pidx);
 			fexpr->funcvariadic = agg_variadic;
 			*invtransfnexpr = (Expr *) fexpr;
 		}
@@ -2310,7 +2313,8 @@ build_aggregate_transfn_expr(Oid *agg_input_types,
  */
 void
 build_aggregate_serialfn_expr(Oid serialfn_oid,
-							  Expr **serialfnexpr)
+							  Expr **serialfnexpr,
+							  ProvenanceIndex pidx)
 {
 	List	   *args;
 	FuncExpr   *fexpr;
@@ -2323,7 +2327,8 @@ build_aggregate_serialfn_expr(Oid serialfn_oid,
 						 args,
 						 InvalidOid,
 						 InvalidOid,
-						 COERCE_EXPLICIT_CALL);
+						 COERCE_EXPLICIT_CALL,
+						 pidx);
 	*serialfnexpr = (Expr *) fexpr;
 }
 
@@ -2333,7 +2338,8 @@ build_aggregate_serialfn_expr(Oid serialfn_oid,
  */
 void
 build_aggregate_deserialfn_expr(Oid deserialfn_oid,
-								Expr **deserialfnexpr)
+								Expr **deserialfnexpr,
+								ProvenanceIndex pidx)
 {
 	List	   *args;
 	FuncExpr   *fexpr;
@@ -2347,7 +2353,8 @@ build_aggregate_deserialfn_expr(Oid deserialfn_oid,
 						 args,
 						 InvalidOid,
 						 InvalidOid,
-						 COERCE_EXPLICIT_CALL);
+						 COERCE_EXPLICIT_CALL,
+						 pidx);
 	*deserialfnexpr = (Expr *) fexpr;
 }
 
@@ -2362,7 +2369,8 @@ build_aggregate_finalfn_expr(Oid *agg_input_types,
 							 Oid agg_result_type,
 							 Oid agg_input_collation,
 							 Oid finalfn_oid,
-							 Expr **finalfnexpr)
+							 Expr **finalfnexpr,
+							 ProvenanceIndex pidx)
 {
 	List	   *args;
 	int			i;
@@ -2384,7 +2392,8 @@ build_aggregate_finalfn_expr(Oid *agg_input_types,
 										 args,
 										 InvalidOid,
 										 agg_input_collation,
-										 COERCE_EXPLICIT_CALL);
+										 COERCE_EXPLICIT_CALL,
+										 pidx);
 	/* finalfn is currently never treated as variadic */
 }
 

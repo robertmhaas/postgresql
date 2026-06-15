@@ -14,6 +14,7 @@
 #define ROWSECURITY_H
 
 #include "nodes/parsenodes.h"
+#include "nodes/provenance.h"
 #include "utils/array.h"
 #include "utils/relcache.h"
 
@@ -26,6 +27,7 @@ typedef struct RowSecurityPolicy
 	Expr	   *qual;			/* Expression to filter rows */
 	Expr	   *with_check_qual;	/* Expression to limit rows allowed */
 	bool		hassublinks;	/* If either expression has sublinks */
+	Provenances *provenances;	/* provenances for this cache entry */
 } RowSecurityPolicy;
 
 typedef struct RowSecurityDesc
@@ -44,6 +46,7 @@ extern PGDLLIMPORT row_security_policy_hook_type row_security_policy_hook_restri
 extern void get_row_security_policies(Query *root,
 									  RangeTblEntry *rte, int rt_index,
 									  List **securityQuals, List **withCheckOptions,
-									  bool *hasRowSecurity, bool *hasSubLinks);
+									  bool *hasRowSecurity, bool *hasSubLinks,
+									  Provenances *provenances);
 
 #endif							/* ROWSECURITY_H */

@@ -46,6 +46,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "nodes/supportnodes.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
@@ -75,7 +76,9 @@ static List *match_pattern_prefix(Node *leftop,
 								  Pattern_Type ptype,
 								  Oid expr_coll,
 								  Oid opfamily,
-								  Oid indexcollation);
+								  Oid indexcollation,
+								  Provenances *provenances,
+								  ProvenanceIndex pidx);
 static double patternsel_common(PlannerInfo *root,
 								Oid oprid,
 								Oid opfuncid,
@@ -211,7 +214,9 @@ like_regex_support(Node *rawreq, Pattern_Type ptype)
 									 ptype,
 									 clause->inputcollid,
 									 req->opfamily,
-									 req->indexcollation);
+									 req->indexcollation,
+									 req->root->glob->provenances,
+									 clause->pidx);
 		}
 		else if (is_funcclause(req->node))	/* be paranoid */
 		{
@@ -224,7 +229,9 @@ like_regex_support(Node *rawreq, Pattern_Type ptype)
 									 ptype,
 									 clause->inputcollid,
 									 req->opfamily,
-									 req->indexcollation);
+									 req->indexcollation,
+									 req->root->glob->provenances,
+									 clause->pidx);
 		}
 	}
 
@@ -241,7 +248,9 @@ match_pattern_prefix(Node *leftop,
 					 Pattern_Type ptype,
 					 Oid expr_coll,
 					 Oid opfamily,
-					 Oid indexcollation)
+					 Oid indexcollation,
+					 Provenances *provenances,
+					 ProvenanceIndex pidx)
 {
 	List	   *result;
 	Const	   *patt;
@@ -257,6 +266,7 @@ match_pattern_prefix(Node *leftop,
 	Expr	   *expr;
 	FmgrInfo	ltproc;
 	Const	   *greaterstr;
+	ProvenanceIndex opfamily_pidx;
 
 	/*
 	 * Can't do anything with a non-constant or NULL pattern argument.
@@ -360,6 +370,20 @@ match_pattern_prefix(Node *leftop,
 	}
 
 	/*
+	 * The switch statement above uses type of the lefthand argument and the
+	 * operator faily to determine which function will be called by any
+	 * OpExpr we synthesize here. One could make an argument for pointing
+	 * the provenance at the type first and then at the opfamily only if
+	 * affected the outcome, or for adding no entry at all since what what
+	 * determines the operator OID is not a catalog lookup but C code, but
+	 * for now we blame the operator family.
+	 */
+	opfamily_pidx =
+		ProvenanceForOpfamily(provenances, opfamily,
+							  BOOTSTRAP_SUPERUSERID, /* PROVENANCE-TODO */
+							  pidx);
+
+	/*
 	 * If necessary, coerce the prefix constant to the right type.  The given
 	 * prefix constant is either text or bytea type, therefore the only case
 	 * where we need to do anything is when converting text to bpchar.  Those
@@ -391,6 +415,7 @@ match_pattern_prefix(Node *leftop,
 		expr = make_opclause(eqopr, BOOLOID, false,
 							 (Expr *) leftop, (Expr *) prefix,
 							 InvalidOid, indexcollation);
+		((OpExpr *) expr)->pidx = opfamily_pidx;
 		result = list_make1(expr);
 		return result;
 	}
@@ -416,6 +441,7 @@ match_pattern_prefix(Node *leftop,
 		expr = make_opclause(preopr, BOOLOID, false,
 							 (Expr *) leftop, (Expr *) prefix,
 							 InvalidOid, indexcollation);
+		((OpExpr *) expr)->pidx = opfamily_pidx;
 		result = list_make1(expr);
 		return result;
 	}
@@ -439,6 +465,7 @@ match_pattern_prefix(Node *leftop,
 	expr = make_opclause(geopr, BOOLOID, false,
 						 (Expr *) leftop, (Expr *) prefix,
 						 InvalidOid, indexcollation);
+	((OpExpr *) expr)->pidx = opfamily_pidx;
 	result = list_make1(expr);
 
 	/*-------
@@ -458,6 +485,7 @@ match_pattern_prefix(Node *leftop,
 		expr = make_opclause(ltopr, BOOLOID, false,
 							 (Expr *) leftop, (Expr *) greaterstr,
 							 InvalidOid, indexcollation);
+		((OpExpr *) expr)->pidx = opfamily_pidx;
 		result = lappend(result, expr);
 	}
 

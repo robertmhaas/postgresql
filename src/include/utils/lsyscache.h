@@ -21,6 +21,9 @@
 /* avoid including subscripting.h here */
 typedef struct SubscriptRoutines SubscriptRoutines;
 
+/* avoid including provenance.h here */
+typedef struct Provenances Provenances;
+
 /* Result list element for get_op_index_interpretation */
 typedef struct OpIndexInterpretation
 {
@@ -141,9 +144,11 @@ extern char func_volatile(Oid funcid);
 extern char func_parallel(Oid funcid);
 extern char get_func_prokind(Oid funcid);
 extern bool get_func_leakproof(Oid funcid);
+extern Oid	get_func_owner(Oid funcid);
 extern RegProcedure get_func_support(Oid funcid);
 extern Oid	get_relname_relid(const char *relname, Oid relnamespace);
 extern char *get_rel_name(Oid relid);
+extern Oid	get_rel_owner(Oid relid);
 extern Oid	get_rel_namespace(Oid relid);
 extern Oid	get_rel_type_id(Oid relid);
 extern char get_rel_relkind(Oid relid);
@@ -156,6 +161,7 @@ extern Oid	get_transform_tosql(Oid typid, Oid langid, List *trftypes);
 extern bool get_typisdefined(Oid typid);
 extern int16 get_typlen(Oid typid);
 extern bool get_typbyval(Oid typid);
+extern Oid	get_typowner(Oid typid);
 extern void get_typlenbyval(Oid typid, int16 *typlen, bool *typbyval);
 extern void get_typlenbyvalalign(Oid typid, int16 *typlen, bool *typbyval,
 								 char *typalign);
@@ -169,7 +175,7 @@ extern void get_type_io_data(Oid typid,
 							 Oid *typioparam,
 							 Oid *func);
 extern char get_typstorage(Oid typid);
-extern Node *get_typdefault(Oid typid);
+extern Node *get_typdefault(Oid typid, Provenances *provenances);
 extern char get_typtype(Oid typid);
 extern bool type_is_rowtype(Oid typid);
 extern bool type_is_enum(Oid typid);

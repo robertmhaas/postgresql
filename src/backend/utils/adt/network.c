@@ -21,6 +21,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/pathnodes.h"
 #include "nodes/supportnodes.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -57,11 +58,15 @@ static List *match_network_function(Node *leftop,
 									Node *rightop,
 									int indexarg,
 									Oid funcid,
-									Oid opfamily);
+									Oid opfamily,
+									Provenances *provenances,
+									ProvenanceIndex pidx);
 static List *match_network_subset(Node *leftop,
 								  Node *rightop,
 								  bool is_eq,
-								  Oid opfamily);
+								  Oid opfamily,
+								  Provenances *provenances,
+								  ProvenanceIndex pidx);
 static bool addressOK(unsigned char *a, int bits, int family);
 static inet *internal_inetpl(inet *ip, int64 addend);
 
@@ -958,7 +963,9 @@ network_subset_support(PG_FUNCTION_ARGS)
 									   (Node *) lsecond(clause->args),
 									   req->indexarg,
 									   req->funcid,
-									   req->opfamily);
+									   req->opfamily,
+									   req->root->glob->provenances,
+									   clause->pidx);
 		}
 		else if (is_funcclause(req->node))	/* be paranoid */
 		{
@@ -970,7 +977,9 @@ network_subset_support(PG_FUNCTION_ARGS)
 									   (Node *) lsecond(clause->args),
 									   req->indexarg,
 									   req->funcid,
-									   req->opfamily);
+									   req->opfamily,
+									   req->root->glob->provenances,
+									   clause->pidx);
 		}
 	}
 
@@ -989,7 +998,9 @@ match_network_function(Node *leftop,
 					   Node *rightop,
 					   int indexarg,
 					   Oid funcid,
-					   Oid opfamily)
+					   Oid opfamily,
+					   Provenances *provenances,
+					   ProvenanceIndex pidx)
 {
 	switch (funcid)
 	{
@@ -997,25 +1008,29 @@ match_network_function(Node *leftop,
 			/* indexkey must be on the left */
 			if (indexarg != 0)
 				return NIL;
-			return match_network_subset(leftop, rightop, false, opfamily);
+			return match_network_subset(leftop, rightop, false, opfamily,
+										provenances, pidx);
 
 		case F_NETWORK_SUBEQ:
 			/* indexkey must be on the left */
 			if (indexarg != 0)
 				return NIL;
-			return match_network_subset(leftop, rightop, true, opfamily);
+			return match_network_subset(leftop, rightop, true, opfamily,
+										provenances, pidx);
 
 		case F_NETWORK_SUP:
 			/* indexkey must be on the right */
 			if (indexarg != 1)
 				return NIL;
-			return match_network_subset(rightop, leftop, false, opfamily);
+			return match_network_subset(rightop, leftop, false, opfamily,
+										provenances, pidx);
 
 		case F_NETWORK_SUPEQ:
 			/* indexkey must be on the right */
 			if (indexarg != 1)
 				return NIL;
-			return match_network_subset(rightop, leftop, true, opfamily);
+			return match_network_subset(rightop, leftop, true, opfamily,
+										provenances, pidx);
 
 		default:
 
@@ -1036,7 +1051,9 @@ static List *
 match_network_subset(Node *leftop,
 					 Node *rightop,
 					 bool is_eq,
-					 Oid opfamily)
+					 Oid opfamily,
+					 Provenances *provenances,
+					 ProvenanceIndex pidx)
 {
 	List	   *result;
 	Datum		rightopval;
@@ -1046,6 +1063,7 @@ match_network_subset(Node *leftop,
 	Datum		opr1right;
 	Datum		opr2right;
 	Expr	   *expr;
+	ProvenanceIndex opfamily_pidx;
 
 	/*
 	 * Can't do anything with a non-constant or NULL comparison value.
@@ -1067,6 +1085,11 @@ match_network_subset(Node *leftop,
 	if (opr1oid == InvalidOid)
 		return NIL;
 
+	/* The choice of operator is determined by the opfamily. */
+	opfamily_pidx = ProvenanceForOpfamily(provenances, opfamily,
+										  BOOTSTRAP_SUPERUSERID, /* PROVENANCE-TODO */
+										  pidx);
+
 	opr1right = network_scan_first(rightopval);
 
 	expr = make_opclause(opr1oid, BOOLOID, false,
@@ -1076,6 +1099,7 @@ match_network_subset(Node *leftop,
 											-1, opr1right,
 											false, false),
 						 InvalidOid, InvalidOid);
+	((OpExpr *) expr)->pidx = opfamily_pidx;
 	result = list_make1(expr);
 
 	/* create clause "key <= network_scan_last( rightopval )" */
@@ -1093,6 +1117,7 @@ match_network_subset(Node *leftop,
 											-1, opr2right,
 											false, false),
 						 InvalidOid, InvalidOid);
+	((OpExpr *) expr)->pidx = opfamily_pidx;
 	result = lappend(result, expr);
 
 	return result;

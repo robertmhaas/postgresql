@@ -106,12 +106,14 @@ extern PGDLLIMPORT bool enable_distinct_reordering;
 extern PlannedStmt *planner(Query *parse, const char *query_string,
 							int cursorOptions,
 							ParamListInfo boundParams,
-							ExplainState *es);
+							ExplainState *es,
+							Provenances *provenances);
 
-extern Expr *expression_planner(Expr *expr);
+extern Expr *expression_planner(Expr *expr, Provenances *provenances);
 extern Expr *expression_planner_with_deps(Expr *expr,
 										  List **relationOids,
-										  List **invalItems);
+										  List **invalItems,
+										  Provenances *provenances);
 
 extern bool plan_cluster_use_sort(Oid tableOid, Oid indexOid);
 extern int	plan_create_index_workers(Oid tableOid, Oid indexOid);
@@ -125,7 +127,7 @@ extern void extract_query_dependencies(Node *query,
 
 /* in prep/prepqual.c: */
 
-extern Node *negate_clause(Node *node);
+extern Node *negate_clause(Node *node, Provenances *provenances);
 extern Expr *canonicalize_qual(Expr *qual, bool is_check);
 
 /* in util/clauses.c: */
@@ -139,19 +141,23 @@ typedef enum
 } NotNullSource;
 
 extern bool contain_mutable_functions(Node *clause);
-extern bool contain_mutable_functions_after_planning(Expr *expr);
+extern bool contain_mutable_functions_after_planning(Expr *expr,
+													 Provenances *provenances);
 extern bool contain_volatile_functions(Node *clause);
-extern bool contain_volatile_functions_after_planning(Expr *expr);
+extern bool contain_volatile_functions_after_planning(Expr *expr,
+													  Provenances *provenances);
 extern bool contain_volatile_functions_not_nextval(Node *clause);
 
-extern Node *eval_const_expressions(PlannerInfo *root, Node *node);
+extern Node *eval_const_expressions(PlannerInfo *root, Node *node,
+									Provenances *provenances);
 
 extern void convert_saop_to_hashed_saop(Node *node);
 
-extern Node *estimate_expression_value(PlannerInfo *root, Node *node);
+extern Node *estimate_expression_value(PlannerInfo *root, Node *node,
+									   Provenances *provenances);
 
 extern Expr *evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
-						   Oid result_collation);
+						   Oid result_collation, Provenances *provenances);
 
 extern bool var_is_nonnullable(PlannerInfo *root, Var *var,
 							   NotNullSource source);
@@ -161,7 +167,8 @@ extern bool expr_is_nonnullable(PlannerInfo *root, Expr *expr,
 
 extern List *expand_function_arguments(List *args, bool include_out_arguments,
 									   Oid result_type,
-									   HeapTuple func_tuple);
+									   HeapTuple func_tuple,
+									   Provenances *provenances);
 
 extern ScalarArrayOpExpr *make_SAOP_expr(Oid oper, Node *leftexpr,
 										 Oid coltype, Oid arraycollid,

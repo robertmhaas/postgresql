@@ -9,6 +9,7 @@ backend_sources += files(
   'nodeFuncs.c',
   'params.c',
   'print.c',
+  'provenance.c',
   'read.c',
   'tidbitmap.c',
   'value.c',

@@ -184,7 +184,8 @@ InitPlanCache(void)
 CachedPlanSource *
 CreateCachedPlan(const RawStmt *raw_parse_tree,
 				 const char *query_string,
-				 CommandTag commandTag)
+				 CommandTag commandTag,
+				 Provenances *provenances)
 {
 	CachedPlanSource *plansource;
 	MemoryContext source_context;
@@ -214,6 +215,7 @@ CreateCachedPlan(const RawStmt *raw_parse_tree,
 	plansource->raw_parse_tree = copyObject(raw_parse_tree);
 	plansource->analyzed_parse_tree = NULL;
 	plansource->query_string = pstrdup(query_string);
+	plansource->parse_provenances = copyObject(provenances);
 	MemoryContextSetIdentifier(source_context, plansource->query_string);
 	plansource->commandTag = commandTag;
 	plansource->param_types = NULL;
@@ -264,13 +266,15 @@ CreateCachedPlan(const RawStmt *raw_parse_tree,
 CachedPlanSource *
 CreateCachedPlanForQuery(Query *analyzed_parse_tree,
 						 const char *query_string,
-						 CommandTag commandTag)
+						 CommandTag commandTag,
+						 Provenances *provenances)
 {
 	CachedPlanSource *plansource;
 	MemoryContext oldcxt;
 
 	/* Rather than duplicating CreateCachedPlan, just do this: */
-	plansource = CreateCachedPlan(NULL, query_string, commandTag);
+	plansource = CreateCachedPlan(NULL, query_string, commandTag,
+								  provenances);
 	oldcxt = MemoryContextSwitchTo(plansource->context);
 	plansource->analyzed_parse_tree = copyObject(analyzed_parse_tree);
 	MemoryContextSwitchTo(oldcxt);
@@ -299,7 +303,8 @@ CreateCachedPlanForQuery(Query *analyzed_parse_tree,
 CachedPlanSource *
 CreateOneShotCachedPlan(RawStmt *raw_parse_tree,
 						const char *query_string,
-						CommandTag commandTag)
+						CommandTag commandTag,
+						Provenances *provenances)
 {
 	CachedPlanSource *plansource;
 
@@ -314,6 +319,7 @@ CreateOneShotCachedPlan(RawStmt *raw_parse_tree,
 	plansource->raw_parse_tree = raw_parse_tree;
 	plansource->analyzed_parse_tree = NULL;
 	plansource->query_string = query_string;
+	plansource->parse_provenances = provenances;
 	plansource->commandTag = commandTag;
 	plansource->param_types = NULL;
 	plansource->num_params = 0;
@@ -398,7 +404,8 @@ CompleteCachedPlan(CachedPlanSource *plansource,
 				   ParserSetupHook parserSetup,
 				   void *parserSetupArg,
 				   int cursor_options,
-				   bool fixed_result)
+				   bool fixed_result,
+				   Provenances *provenances)
 {
 	MemoryContext source_context = plansource->context;
 	MemoryContext oldcxt = CurrentMemoryContext;
@@ -431,10 +438,12 @@ CompleteCachedPlan(CachedPlanSource *plansource,
 												  ALLOCSET_START_SMALL_SIZES);
 		MemoryContextSwitchTo(querytree_context);
 		querytree_list = copyObject(querytree_list);
+		provenances = copyObject(provenances);
 	}
 
 	plansource->query_context = querytree_context;
 	plansource->query_list = querytree_list;
+	plansource->rewrite_provenances = provenances;
 
 	if (!plansource->is_oneshot && StmtPlanRequiresRevalidation(plansource))
 	{
@@ -690,6 +699,7 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	TupleDesc	resultDesc;
 	MemoryContext querytree_context;
 	MemoryContext oldcxt;
+	Provenances *provenances;
 
 	/*
 	 * For one-shot plans, we do not support revalidation checking; it's
@@ -763,6 +773,7 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	 */
 	plansource->is_valid = false;
 	plansource->query_list = NIL;
+	plansource->rewrite_provenances = NULL;
 	plansource->relationOids = NIL;
 	plansource->invalItems = NIL;
 	plansource->search_path = NULL;
@@ -813,22 +824,25 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 		RawStmt    *rawtree;
 
 		/*
-		 * The parser tends to scribble on its input, so we must copy the raw
-		 * parse tree to prevent corruption of the cache.
+		 * The parser and rewriter scribble on their inputs, so we must copy
+		 * the raw parse tree and provenances to prevent cache corruption.
 		 */
 		rawtree = copyObject(plansource->raw_parse_tree);
+		provenances = copyObject(plansource->parse_provenances);
 		if (plansource->parserSetup != NULL)
 			tlist = pg_analyze_and_rewrite_withcb(rawtree,
 												  plansource->query_string,
 												  plansource->parserSetup,
 												  plansource->parserSetupArg,
-												  queryEnv);
+												  queryEnv,
+												  provenances);
 		else
 			tlist = pg_analyze_and_rewrite_fixedparams(rawtree,
 													   plansource->query_string,
 													   plansource->param_types,
 													   plansource->num_params,
-													   queryEnv);
+													   queryEnv,
+													   provenances);
 	}
 	else if (plansource->analyzed_parse_tree != NULL)
 	{
@@ -837,15 +851,17 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 
 		/* The rewriter scribbles on its input, too, so copy */
 		analyzed_tree = copyObject(plansource->analyzed_parse_tree);
+		provenances = copyObject(plansource->parse_provenances);
 		/* Acquire locks needed before rewriting ... */
 		AcquireRewriteLocks(analyzed_tree, true, false);
 		/* ... and do it */
-		tlist = pg_rewrite_query(analyzed_tree);
+		tlist = pg_rewrite_query(analyzed_tree, provenances);
 	}
 	else
 	{
 		/* Empty query, nothing to do */
 		tlist = NIL;
+		provenances = NULL;
 	}
 
 	/* Apply post-rewrite callback if there is one */
@@ -894,6 +910,7 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 	oldcxt = MemoryContextSwitchTo(querytree_context);
 
 	qlist = copyObject(tlist);
+	plansource->rewrite_provenances = copyObject(provenances);
 
 	/*
 	 * Use the planner machinery to extract dependencies.  Data is saved in
@@ -1089,7 +1106,8 @@ BuildCachedPlan(CachedPlanSource *plansource, List *qlist,
 	 * Generate the plan.
 	 */
 	plist = pg_plan_queries(qlist, plansource->query_string,
-							plansource->cursor_options, boundParams);
+							plansource->cursor_options, boundParams,
+							copyObject(plansource->rewrite_provenances));
 
 	/* Release snapshot if we got one */
 	if (snapshot_set)
@@ -1714,6 +1732,7 @@ CopyCachedPlan(CachedPlanSource *plansource)
 	newsource->postRewrite = plansource->postRewrite;
 	newsource->postRewriteArg = plansource->postRewriteArg;
 	newsource->cursor_options = plansource->cursor_options;
+	newsource->parse_provenances = copyObject(plansource->parse_provenances);
 	newsource->fixed_result = plansource->fixed_result;
 	if (plansource->resultDesc)
 		newsource->resultDesc = CreateTupleDescCopy(plansource->resultDesc);
@@ -1726,6 +1745,7 @@ CopyCachedPlan(CachedPlanSource *plansource)
 											  ALLOCSET_START_SMALL_SIZES);
 	MemoryContextSwitchTo(querytree_context);
 	newsource->query_list = copyObject(plansource->query_list);
+	newsource->rewrite_provenances = copyObject(plansource->rewrite_provenances);
 	newsource->relationOids = copyObject(plansource->relationOids);
 	newsource->invalItems = copyObject(plansource->invalItems);
 	if (plansource->search_path)
@@ -1813,7 +1833,7 @@ CachedPlanGetTargetList(CachedPlanSource *plansource,
  * context before that.)  The passed-in expr tree is not modified.
  */
 CachedExpression *
-GetCachedExpression(Node *expr)
+GetCachedExpression(Node *expr, Provenances *provenances)
 {
 	CachedExpression *cexpr;
 	List	   *relationOids;
@@ -1828,7 +1848,8 @@ GetCachedExpression(Node *expr)
 	 */
 	expr = (Node *) expression_planner_with_deps((Expr *) expr,
 												 &relationOids,
-												 &invalItems);
+												 &invalItems,
+												 provenances);
 
 	/*
 	 * Make a private memory context, and copy what we need into that.  To

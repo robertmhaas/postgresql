@@ -36,6 +36,9 @@ static const char *pg_strtok_ptr = NULL;
 bool		restore_location_fields = false;
 #endif
 
+/* Override value for ProvenanceIndex fields; -1 means no override */
+int			provenance_index_override = -1;
+
 
 /*
  * stringToNode -
@@ -46,10 +49,12 @@ bool		restore_location_fields = false;
  * in builds with DEBUG_NODE_TESTS_ENABLED defined.
  */
 static void *
-stringToNodeInternal(const char *str, bool restore_loc_fields)
+stringToNodeInternal(const char *str, bool restore_loc_fields,
+					 ProvenanceIndex pidx)
 {
 	void	   *retval;
 	const char *save_strtok;
+	int			save_provenance_index;
 #ifdef DEBUG_NODE_TESTS_ENABLED
 	bool		save_restore_location_fields;
 #endif
@@ -72,6 +77,10 @@ stringToNodeInternal(const char *str, bool restore_loc_fields)
 	restore_location_fields = restore_loc_fields;
 #endif
 
+	/* Save/restore the provenance index override. */
+	save_provenance_index = provenance_index_override;
+	provenance_index_override = pidx;
+
 	retval = nodeRead(NULL, 0); /* do the reading */
 
 	pg_strtok_ptr = save_strtok;
@@ -80,16 +89,22 @@ stringToNodeInternal(const char *str, bool restore_loc_fields)
 	restore_location_fields = save_restore_location_fields;
 #endif
 
+	provenance_index_override = save_provenance_index;
+
 	return retval;
 }
 
 /*
  * Externally visible entry points
+ *
+ * If pidx >= 0 or pidx == PI_NEVER_EXECUTED, any ProvenanceIndex fields
+ * that are part of the restored node tree will receive the given value
+ * instead of the stored value.
  */
 void *
-stringToNode(const char *str)
+stringToNode(const char *str, int pidx)
 {
-	return stringToNodeInternal(str, false);
+	return stringToNodeInternal(str, false, pidx);
 }
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
@@ -97,7 +112,7 @@ stringToNode(const char *str)
 void *
 stringToNodeWithLocations(const char *str)
 {
-	return stringToNodeInternal(str, true);
+	return stringToNodeInternal(str, true, -1);
 }
 
 #endif

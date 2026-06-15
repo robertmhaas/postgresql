@@ -244,6 +244,10 @@ plpgsql_compile_callback(FunctionCallInfo fcinfo,
 	function->fn_signature = pstrdup(proc_signature);
 	MemoryContextSetIdentifier(func_cxt, function->fn_signature);
 	function->fn_oid = fcinfo->flinfo->fn_oid;
+	function->provenances =
+		InitProvenancesForCache(PROVENANCE_FUNCTION,
+								fcinfo->flinfo->fn_oid,
+								procStruct->proowner);
 	function->fn_input_collation = fcinfo->fncollation;
 	function->fn_cxt = func_cxt;
 	function->out_param_varno = -1; /* set up for no OUT param */
@@ -740,7 +744,7 @@ plpgsql_compile_callback(FunctionCallInfo fcinfo,
  * ----------
  */
 PLpgSQL_function *
-plpgsql_compile_inline(char *proc_source)
+plpgsql_compile_inline(char *proc_source, Provenances *provenances)
 {
 	yyscan_t	scanner;
 	char	   *func_name = "inline_code_block";
@@ -803,6 +807,7 @@ plpgsql_compile_inline(char *proc_source)
 	function->nstatements = 0;
 	function->requires_procedure_resowner = false;
 	function->has_exception_block = false;
+	function->provenances = copyObject(provenances);
 
 	plpgsql_ns_init();
 	plpgsql_ns_push(func_name, PLPGSQL_LABEL_BLOCK);

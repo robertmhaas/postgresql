@@ -49,7 +49,7 @@ extern bool is_pseudo_constant_clause_relids(Node *clause, Relids relids);
 
 extern int	NumRelids(PlannerInfo *root, Node *clause);
 
-extern void CommuteOpExpr(OpExpr *clause);
+extern void CommuteOpExpr(OpExpr *clause, Provenances *provenances);
 
 extern Query *inline_function_in_from(PlannerInfo *root,
 									  RangeTblEntry *rte);

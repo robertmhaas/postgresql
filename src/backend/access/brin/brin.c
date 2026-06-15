@@ -30,6 +30,7 @@
 #include "commands/vacuum.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
+#include "nodes/provenance.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "storage/bufmgr.h"
@@ -53,6 +54,7 @@
 #define PARALLEL_KEY_QUERY_TEXT			UINT64CONST(0xB000000000000003)
 #define PARALLEL_KEY_WAL_USAGE			UINT64CONST(0xB000000000000004)
 #define PARALLEL_KEY_BUFFER_USAGE		UINT64CONST(0xB000000000000005)
+#define PARALLEL_KEY_PROVENANCES		UINT64CONST(0xB000000000000006)
 
 /*
  * Status for index builds performed in parallel.  This is allocated in a
@@ -219,7 +221,8 @@ static BrinBuildState *initialize_brin_buildstate(Relation idxRel,
 static BrinInsertState *initialize_brin_insertstate(Relation idxRel, IndexInfo *indexInfo);
 static void terminate_brin_buildstate(BrinBuildState *state);
 static void brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
-						  bool include_partial, double *numSummarized, double *numExisting);
+						  bool include_partial, double *numSummarized,
+						  double *numExisting, Provenances *provenances);
 static void form_and_insert_tuple(BrinBuildState *state);
 static void form_and_spill_tuple(BrinBuildState *state);
 static void union_tuples(BrinDesc *bdesc, BrinMemTuple *a,
@@ -233,18 +236,21 @@ static void brin_fill_empty_ranges(BrinBuildState *state,
 
 /* parallel index builds */
 static void _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
-								 bool isconcurrent, int request);
+								 bool isconcurrent, int request,
+								 Provenances *provenances);
 static void _brin_end_parallel(BrinLeader *brinleader, BrinBuildState *state);
 static Size _brin_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static double _brin_parallel_heapscan(BrinBuildState *state);
 static double _brin_parallel_merge(BrinBuildState *state);
 static void _brin_leader_participate_as_worker(BrinBuildState *buildstate,
-											   Relation heap, Relation index);
+											   Relation heap, Relation index,
+											   Provenances *provenances);
 static void _brin_parallel_scan_and_build(BrinBuildState *state,
 										  BrinShared *brinshared,
 										  Sharedsort *sharedsort,
 										  Relation heap, Relation index,
-										  int sortmem, bool progress);
+										  int sortmem, bool progress,
+										  Provenances *provenances);
 
 /*
  * BRIN handler function: return IndexAmRoutine with access method parameters
@@ -1107,7 +1113,8 @@ brinbuildCallbackParallel(Relation index,
  * brinbuild() -- build a new BRIN index.
  */
 IndexBuildResult *
-brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+brinbuild(Relation heap, Relation index, IndexInfo *indexInfo,
+		  Provenances *provenances)
 {
 	IndexBuildResult *result;
 	double		reltuples;
@@ -1175,7 +1182,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 */
 	if (indexInfo->ii_ParallelWorkers > 0)
 		_brin_begin_parallel(state, heap, index, indexInfo->ii_Concurrent,
-							 indexInfo->ii_ParallelWorkers);
+							 indexInfo->ii_ParallelWorkers, provenances);
 
 	/*
 	 * If parallel build requested and at least one worker process was
@@ -1236,7 +1243,8 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 * generate summary for the same range twice).
 		 */
 		reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
-										   brinbuildCallback, state, NULL);
+										   brinbuildCallback, state, NULL,
+										   provenances);
 
 		/*
 		 * process the final batch
@@ -1339,7 +1347,8 @@ brinvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	brin_vacuum_scan(info->index, info->strategy);
 
 	brinsummarize(info->index, heapRel, BRIN_ALL_BLOCKRANGES, false,
-				  &stats->num_index_tuples, &stats->num_index_tuples);
+				  &stats->num_index_tuples, &stats->num_index_tuples,
+				  info->provenances);
 
 	table_close(heapRel, AccessShareLock);
 
@@ -1470,7 +1479,16 @@ brin_summarize_range(PG_FUNCTION_ARGS)
 
 	/* see gin_clean_pending_list() */
 	if (indexRel->rd_index->indisvalid)
-		brinsummarize(indexRel, heapRel, heapBlk, true, &numSummarized, NULL);
+	{
+		/* PROVENANCE-TODO: FIXME: provenances should be threaded from caller */
+		Provenances *provenances =
+			InitProvenancesForCache(PROVENANCE_FUNCTION,
+									RelationGetRelid(indexRel),
+									indexRel->rd_rel->relowner);
+
+		brinsummarize(indexRel, heapRel, heapBlk, true, &numSummarized,
+					  NULL, provenances);
+	}
 	else
 		ereport(DEBUG1,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -1761,7 +1779,8 @@ terminate_brin_buildstate(BrinBuildState *state)
  */
 static void
 summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
-				BlockNumber heapBlk, BlockNumber heapNumBlks)
+				BlockNumber heapBlk, BlockNumber heapNumBlks,
+				Provenances *provenances)
 {
 	Buffer		phbuf;
 	BrinTuple  *phtup;
@@ -1818,7 +1837,8 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
 	state->bs_currRangeStart = heapBlk;
 	table_index_build_range_scan(heapRel, state->bs_irel, indexInfo, false, true, false,
 								 heapBlk, scanNumBlks,
-								 brinbuildCallback, state, NULL);
+								 brinbuildCallback, state, NULL,
+								 provenances);
 
 	/*
 	 * Now we update the values obtained by the scan with the placeholder
@@ -1887,7 +1907,8 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
  */
 static void
 brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
-			  bool include_partial, double *numSummarized, double *numExisting)
+			  bool include_partial, double *numSummarized,
+			  double *numExisting, Provenances *provenances)
 {
 	BrinRevmap *revmap;
 	BrinBuildState *state = NULL;
@@ -1951,7 +1972,8 @@ brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 												   InvalidBlockNumber);
 				indexInfo = BuildIndexInfo(index);
 			}
-			summarize_range(indexInfo, state, heapRel, startBlk, heapNumBlocks);
+			summarize_range(indexInfo, state, heapRel, startBlk, heapNumBlocks,
+							provenances);
 
 			/* and re-initialize state for the next range */
 			brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
@@ -2377,7 +2399,8 @@ check_null_keys(BrinValues *bval, ScanKey *nullkeys, int nnullkeys)
  */
 static void
 _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
-					 bool isconcurrent, int request)
+					 bool isconcurrent, int request,
+					 Provenances *provenances)
 {
 	ParallelContext *pcxt;
 	int			scantuplesortstates;
@@ -2390,6 +2413,9 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
 	bool		leaderparticipates = true;
+	char	   *provenancesstr;
+	char	   *sharedprovenances;
+	int			provenanceslen;
 	int			querylen;
 
 #ifdef DISABLE_LEADER_PARTICIPATION
@@ -2444,7 +2470,7 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 						   mul_size(sizeof(BufferUsage), pcxt->nworkers));
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
-	/* Finally, estimate PARALLEL_KEY_QUERY_TEXT space */
+	/* Estimate PARALLEL_KEY_QUERY_TEXT space */
 	if (debug_query_string)
 	{
 		querylen = strlen(debug_query_string);
@@ -2453,6 +2479,12 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 	}
 	else
 		querylen = 0;			/* keep compiler quiet */
+
+	/* Estimate PARALLEL_KEY_PROVENANCES space */
+	provenancesstr = nodeToString(provenances);
+	provenanceslen = strlen(provenancesstr);
+	shm_toc_estimate_chunk(&pcxt->estimator, provenanceslen + 1);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
 	/* Everyone's had a chance to ask for space, so now create the DSM */
 	InitializeParallelDSM(pcxt);
@@ -2513,6 +2545,13 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_QUERY_TEXT, sharedquery);
 	}
 
+	/* Store serialized provenances for workers */
+	sharedprovenances = (char *) shm_toc_allocate(pcxt->toc,
+												  provenanceslen + 1);
+	memcpy(sharedprovenances, provenancesstr, provenanceslen + 1);
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_PROVENANCES,
+				   sharedprovenances);
+
 	/*
 	 * Allocate space for each worker's WalUsage and BufferUsage; no need to
 	 * initialize.
@@ -2548,7 +2587,8 @@ _brin_begin_parallel(BrinBuildState *buildstate, Relation heap, Relation index,
 
 	/* Join heap scan ourselves */
 	if (leaderparticipates)
-		_brin_leader_participate_as_worker(buildstate, heap, index);
+		_brin_leader_participate_as_worker(buildstate, heap, index,
+										   provenances);
 
 	/*
 	 * Caller needs to wait for all launched workers when we return.  Make
@@ -2791,7 +2831,8 @@ _brin_parallel_estimate_shared(Relation heap, Snapshot snapshot)
  * Within leader, participate as a parallel worker.
  */
 static void
-_brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Relation index)
+_brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap,
+								   Relation index, Provenances *provenances)
 {
 	BrinLeader *brinleader = buildstate->bs_leader;
 	int			sortmem;
@@ -2805,7 +2846,8 @@ _brin_leader_participate_as_worker(BrinBuildState *buildstate, Relation heap, Re
 
 	/* Perform work common to all participants */
 	_brin_parallel_scan_and_build(buildstate, brinleader->brinshared,
-								  brinleader->sharedsort, heap, index, sortmem, true);
+								  brinleader->sharedsort, heap, index,
+								  sortmem, true, provenances);
 }
 
 /*
@@ -2822,7 +2864,8 @@ static void
 _brin_parallel_scan_and_build(BrinBuildState *state,
 							  BrinShared *brinshared, Sharedsort *sharedsort,
 							  Relation heap, Relation index,
-							  int sortmem, bool progress)
+							  int sortmem, bool progress,
+							  Provenances *provenances)
 {
 	SortCoordinate coordinate;
 	TableScanDesc scan;
@@ -2848,7 +2891,8 @@ _brin_parallel_scan_and_build(BrinBuildState *state,
 									SO_NONE);
 
 	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
-									   brinbuildCallbackParallel, state, scan);
+									   brinbuildCallbackParallel, state, scan,
+									   provenances);
 
 	/* insert the last item */
 	form_and_spill_tuple(state);
@@ -2880,6 +2924,8 @@ void
 _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 {
 	char	   *sharedquery;
+	char	   *provenancesstr;
+	Provenances *provenances;
 	BrinShared *brinshared;
 	Sharedsort *sharedsort;
 	BrinBuildState *buildstate;
@@ -2935,6 +2981,10 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
 	tuplesort_attach_shared(sharedsort, seg);
 
+	/* Deserialize provenances from leader */
+	provenancesstr = shm_toc_lookup(toc, PARALLEL_KEY_PROVENANCES, false);
+	provenances = stringToNode(provenancesstr, -1);
+
 	/* Prepare to track buffer usage during parallel execution */
 	InstrStartParallelQuery();
 
@@ -2946,7 +2996,8 @@ _brin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	sortmem = maintenance_work_mem / brinshared->scantuplesortstates;
 
 	_brin_parallel_scan_and_build(buildstate, brinshared, sharedsort,
-								  heapRel, indexRel, sortmem, false);
+								  heapRel, indexRel, sortmem, false,
+								  provenances);
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);

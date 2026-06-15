@@ -3740,7 +3740,8 @@ process_implied_equality(PlannerInfo *root,
 	/* If both constant, try to reduce to a boolean constant. */
 	if (both_const)
 	{
-		clause = eval_const_expressions(root, clause);
+		clause = eval_const_expressions(root, clause,
+										root->glob->provenances);
 
 		/* If we produced const TRUE, just drop the clause */
 		if (clause && IsA(clause, Const))

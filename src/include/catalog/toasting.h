@@ -16,14 +16,19 @@
 
 #include "storage/lockdefs.h"
 
+typedef struct Provenances Provenances;
+
 /*
  * toasting.c prototypes
  */
-extern void NewRelationCreateToastTable(Oid relOid, Datum reloptions);
+extern void NewRelationCreateToastTable(Oid relOid, Datum reloptions,
+										Provenances *provenances);
 extern void NewHeapCreateToastTable(Oid relOid, Datum reloptions,
-									LOCKMODE lockmode, Oid OIDOldToast);
+									LOCKMODE lockmode, Oid OIDOldToast,
+									Provenances *provenances);
 extern void AlterTableCreateToastTable(Oid relOid, Datum reloptions,
-									   LOCKMODE lockmode);
+									   LOCKMODE lockmode,
+									   Provenances *provenances);
 extern void BootstrapToastTable(char *relName,
 								Oid toastOid, Oid toastIndexOid);
 

@@ -46,13 +46,16 @@ extern void build_aggregate_transfn_expr(Oid *agg_input_types,
 										 Oid transfn_oid,
 										 Oid invtransfn_oid,
 										 Expr **transfnexpr,
-										 Expr **invtransfnexpr);
+										 Expr **invtransfnexpr,
+										 ProvenanceIndex pidx);
 
 extern void build_aggregate_serialfn_expr(Oid serialfn_oid,
-										  Expr **serialfnexpr);
+										  Expr **serialfnexpr,
+										  ProvenanceIndex pidx);
 
 extern void build_aggregate_deserialfn_expr(Oid deserialfn_oid,
-											Expr **deserialfnexpr);
+											Expr **deserialfnexpr,
+											ProvenanceIndex pidx);
 
 extern void build_aggregate_finalfn_expr(Oid *agg_input_types,
 										 int num_finalfn_inputs,
@@ -60,6 +63,7 @@ extern void build_aggregate_finalfn_expr(Oid *agg_input_types,
 										 Oid agg_result_type,
 										 Oid agg_input_collation,
 										 Oid finalfn_oid,
-										 Expr **finalfnexpr);
+										 Expr **finalfnexpr,
+										 ProvenanceIndex pidx);
 
 #endif							/* PARSE_AGG_H */

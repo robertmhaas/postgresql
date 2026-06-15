@@ -137,6 +137,7 @@ typedef enum PublishGencolsType
 typedef struct Publication
 {
 	Oid			oid;
+	Oid			owner;
 	char	   *name;
 	bool		alltables;
 	bool		allsequences;

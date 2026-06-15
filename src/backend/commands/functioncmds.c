@@ -53,6 +53,7 @@
 #include "executor/functions.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/analyze.h"
@@ -871,7 +872,7 @@ interpret_AS_clause(Oid languageOid, const char *languageName,
 					List *parameterTypes, List *inParameterNames,
 					char **prosrc_str_p, char **probin_str_p,
 					Node **sql_body_out,
-					const char *queryString)
+					const char *queryString, Provenances *provenances)
 {
 	if (!sql_body_in && !as)
 		ereport(ERROR,
@@ -949,6 +950,7 @@ interpret_AS_clause(Oid languageOid, const char *languageName,
 				ParseState *pstate = make_parsestate(NULL);
 
 				pstate->p_sourcetext = queryString;
+				pstate->p_provenances = provenances;
 				sql_fn_parser_setup(pstate, pinfo);
 				q = transformStmt(pstate, stmt);
 				if (q->commandType == CMD_UTILITY)
@@ -968,6 +970,7 @@ interpret_AS_clause(Oid languageOid, const char *languageName,
 			ParseState *pstate = make_parsestate(NULL);
 
 			pstate->p_sourcetext = queryString;
+			pstate->p_provenances = provenances;
 			sql_fn_parser_setup(pstate, pinfo);
 			q = transformStmt(pstate, sql_body_in);
 			if (q->commandType == CMD_UTILITY)
@@ -1242,7 +1245,7 @@ CreateFunction(ParseState *pstate, CreateFunctionStmt *stmt)
 	interpret_AS_clause(languageOid, language, funcname, as_clause, stmt->sql_body,
 						parameterTypes_list, inParameterNames_list,
 						&prosrc_str, &probin_str, &prosqlbody,
-						pstate->p_sourcetext);
+						pstate->p_sourcetext, pstate->p_provenances);
 
 	/*
 	 * Set default values for COST and ROWS depending on other parameters;
@@ -2143,6 +2146,7 @@ ExecuteDoStmt(ParseState *pstate, DoStmt *stmt, bool atomic)
 	codeblock->langOid = languageStruct->oid;
 	codeblock->langIsTrusted = languageStruct->lanpltrusted;
 	codeblock->atomic = atomic;
+	codeblock->provenances = pstate->p_provenances;
 
 	if (languageStruct->lanpltrusted)
 	{
@@ -2204,9 +2208,11 @@ ExecuteDoStmt(ParseState *pstate, DoStmt *stmt, bool atomic)
  * that the CALL utility statement runs in.  Therefore, any pass-by-ref
  * values that we're passing to the procedure will survive transaction
  * commits that might occur inside the procedure.
+ *
  */
 void
-ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver *dest)
+ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic,
+				DestReceiver *dest, Provenances *provenances)
 {
 	LOCAL_FCINFO(fcinfo, FUNC_MAX_ARGS);
 	ListCell   *lc;
@@ -2281,6 +2287,7 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 	 */
 	estate = CreateExecutorState();
 	estate->es_param_list_info = params;
+	estate->es_provenances = provenances;
 	econtext = CreateExprContext(estate);
 
 	/*

@@ -1924,8 +1924,8 @@ scalararraysel(PlannerInfo *root,
 	rightop = (Node *) lsecond(clause->args);
 
 	/* aggressively reduce both sides to constants */
-	leftop = estimate_expression_value(root, leftop);
-	rightop = estimate_expression_value(root, rightop);
+	leftop = estimate_expression_value(root, leftop, NULL);
+	rightop = estimate_expression_value(root, rightop, NULL);
 
 	/* get nominal (after relabeling) element type of rightop */
 	nominal_element_type = get_base_element_type(exprType(rightop));
@@ -5539,7 +5539,7 @@ get_restriction_variable(PlannerInfo *root, List *args, int varRelid,
 	if (vardata->rel && rdata.rel == NULL)
 	{
 		*varonleft = true;
-		*other = estimate_expression_value(root, rdata.var);
+		*other = estimate_expression_value(root, rdata.var, NULL);
 		/* Assume we need no ReleaseVariableStats(rdata) here */
 		return true;
 	}
@@ -5547,7 +5547,7 @@ get_restriction_variable(PlannerInfo *root, List *args, int varRelid,
 	if (vardata->rel == NULL && rdata.rel)
 	{
 		*varonleft = false;
-		*other = estimate_expression_value(root, vardata->var);
+		*other = estimate_expression_value(root, vardata->var, NULL);
 		/* Assume we need no ReleaseVariableStats(*vardata) here */
 		*vardata = rdata;
 		return true;
@@ -8478,7 +8478,7 @@ gincost_opexpr(PlannerInfo *root,
 	Node	   *operand = (Node *) lsecond(clause->args);
 
 	/* aggressively reduce to a constant, and look through relabeling */
-	operand = estimate_expression_value(root, operand);
+	operand = estimate_expression_value(root, operand, NULL);
 
 	if (IsA(operand, RelabelType))
 		operand = (Node *) ((RelabelType *) operand)->arg;
@@ -8541,7 +8541,7 @@ gincost_scalararrayopexpr(PlannerInfo *root,
 	Assert(clause->useOr);
 
 	/* aggressively reduce to a constant, and look through relabeling */
-	rightop = estimate_expression_value(root, rightop);
+	rightop = estimate_expression_value(root, rightop, NULL);
 
 	if (IsA(rightop, RelabelType))
 		rightop = (Node *) ((RelabelType *) rightop)->arg;

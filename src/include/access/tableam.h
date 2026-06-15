@@ -36,6 +36,7 @@ extern PGDLLIMPORT bool synchronize_seqscans;
 /* forward references in this file */
 typedef struct BulkInsertStateData BulkInsertStateData;
 typedef struct IndexInfo IndexInfo;
+typedef struct Provenances Provenances;
 typedef struct SampleScanState SampleScanState;
 typedef struct ScanKeyData ScanKeyData;
 typedef struct ValidateIndexState ValidateIndexState;
@@ -690,7 +691,8 @@ typedef struct TableAmRoutine
 	 */
 	void		(*relation_vacuum) (Relation rel,
 									const VacuumParams *params,
-									BufferAccessStrategy bstrategy);
+									BufferAccessStrategy bstrategy,
+									Provenances *provenances);
 
 	/*
 	 * Prepare to analyze block `blockno` of `scan`. The scan has been started
@@ -736,14 +738,16 @@ typedef struct TableAmRoutine
 										   BlockNumber numblocks,
 										   IndexBuildCallback callback,
 										   void *callback_state,
-										   TableScanDesc scan);
+										   TableScanDesc scan,
+										   Provenances *provenances);
 
 	/* see table_index_validate_scan for reference about parameters */
 	void		(*index_validate_scan) (Relation table_rel,
 										Relation index_rel,
 										IndexInfo *index_info,
 										Snapshot snapshot,
-										ValidateIndexState *state);
+										ValidateIndexState *state,
+										Provenances *provenances);
 
 
 	/* ------------------------------------------------------------------------
@@ -1775,9 +1779,9 @@ table_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
  */
 static inline void
 table_relation_vacuum(Relation rel, const VacuumParams *params,
-					  BufferAccessStrategy bstrategy)
+					  BufferAccessStrategy bstrategy, Provenances *provenances)
 {
-	rel->rd_tableam->relation_vacuum(rel, params, bstrategy);
+	rel->rd_tableam->relation_vacuum(rel, params, bstrategy, provenances);
 }
 
 /*
@@ -1849,7 +1853,8 @@ table_index_build_scan(Relation table_rel,
 					   bool progress,
 					   IndexBuildCallback callback,
 					   void *callback_state,
-					   TableScanDesc scan)
+					   TableScanDesc scan,
+					   Provenances *provenances)
 {
 	return table_rel->rd_tableam->index_build_range_scan(table_rel,
 														 index_rel,
@@ -1861,7 +1866,8 @@ table_index_build_scan(Relation table_rel,
 														 InvalidBlockNumber,
 														 callback,
 														 callback_state,
-														 scan);
+														 scan,
+														 provenances);
 }
 
 /*
@@ -1885,7 +1891,8 @@ table_index_build_range_scan(Relation table_rel,
 							 BlockNumber numblocks,
 							 IndexBuildCallback callback,
 							 void *callback_state,
-							 TableScanDesc scan)
+							 TableScanDesc scan,
+							 Provenances *provenances)
 {
 	return table_rel->rd_tableam->index_build_range_scan(table_rel,
 														 index_rel,
@@ -1897,7 +1904,8 @@ table_index_build_range_scan(Relation table_rel,
 														 numblocks,
 														 callback,
 														 callback_state,
-														 scan);
+														 scan,
+														 provenances);
 }
 
 /*
@@ -1910,13 +1918,15 @@ table_index_validate_scan(Relation table_rel,
 						  Relation index_rel,
 						  IndexInfo *index_info,
 						  Snapshot snapshot,
-						  ValidateIndexState *state)
+						  ValidateIndexState *state,
+						  Provenances *provenances)
 {
 	table_rel->rd_tableam->index_validate_scan(table_rel,
 											   index_rel,
 											   index_info,
 											   snapshot,
-											   state);
+											   state,
+											   provenances);
 }
 
 

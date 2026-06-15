@@ -256,6 +256,9 @@ typedef struct LVRelState
 	Relation   *indrels;
 	int			nindexes;
 
+	/* Provenances for any expression evaluation */
+	Provenances *provenances;
+
 	/* Buffer access strategy and parallel vacuum state */
 	BufferAccessStrategy bstrategy;
 	ParallelVacuumState *pvs;
@@ -622,7 +625,7 @@ heap_vacuum_eager_scan_setup(LVRelState *vacrel, const VacuumParams *params)
  */
 void
 heap_vacuum_rel(Relation rel, const VacuumParams *params,
-				BufferAccessStrategy bstrategy)
+				BufferAccessStrategy bstrategy, Provenances *provenances)
 {
 	LVRelState *vacrel;
 	bool		verbose,
@@ -684,6 +687,7 @@ heap_vacuum_rel(Relation rel, const VacuumParams *params,
 	 * these temp copies.
 	 */
 	vacrel = palloc0_object(LVRelState);
+	vacrel->provenances = provenances;
 	vacrel->dbname = get_database_name(MyDatabaseId);
 	vacrel->relnamespace = get_namespace_name(RelationGetNamespace(rel));
 	vacrel->relname = pstrdup(RelationGetRelationName(rel));
@@ -3024,6 +3028,7 @@ lazy_vacuum_one_index(Relation indrel, IndexBulkDeleteResult *istat,
 	ivinfo.message_level = DEBUG2;
 	ivinfo.num_heap_tuples = reltuples;
 	ivinfo.strategy = vacrel->bstrategy;
+	ivinfo.provenances = vacrel->provenances;
 
 	/*
 	 * Update error traceback information.
@@ -3075,6 +3080,7 @@ lazy_cleanup_one_index(Relation indrel, IndexBulkDeleteResult *istat,
 
 	ivinfo.num_heap_tuples = reltuples;
 	ivinfo.strategy = vacrel->bstrategy;
+	ivinfo.provenances = vacrel->provenances;
 
 	/*
 	 * Update error traceback information.
@@ -3447,7 +3453,8 @@ dead_items_alloc(LVRelState *vacrel, int nworkers)
 											   vacrel->nindexes, nworkers,
 											   vac_work_mem,
 											   vacrel->verbose ? INFO : DEBUG2,
-											   vacrel->bstrategy);
+											   vacrel->bstrategy,
+											   vacrel->provenances);
 
 		/*
 		 * If parallel mode started, dead_items and dead_items_info spaces are

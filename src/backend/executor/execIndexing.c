@@ -388,6 +388,20 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 			predicate = indexInfo->ii_PredicateState;
 			if (predicate == NULL)
 			{
+				if (indexInfo->ii_PredicateProvenances != NULL)
+				{
+					/*
+					 * PROVENANCE-TODO: Once we have provenance indexes, we
+					 * will need to make a copy of ii_PredicateProvenances
+					 * here with the indexes offset by the return value of
+					 * AppendProvenances. (Be careful about which memory
+					 * context to use. Alternatively, should we have a version
+					 * of ExecPrepareQual that can handle this for us?)
+					 */
+					AppendProvenances(estate->es_provenances,
+									  indexInfo->ii_PredicateProvenances,
+									  0);
+				}
 				predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
 				indexInfo->ii_PredicateState = predicate;
 			}
@@ -624,6 +638,20 @@ ExecCheckIndexConstraints(ResultRelInfo *resultRelInfo, TupleTableSlot *slot,
 			predicate = indexInfo->ii_PredicateState;
 			if (predicate == NULL)
 			{
+				if (indexInfo->ii_PredicateProvenances != NULL)
+				{
+					/*
+					 * PROVENANCE-TODO: Once we have provenance indexes, we
+					 * will need to make a copy of ii_PredicateProvenances
+					 * here with the indexes offset by the return value of
+					 * AppendProvenances. (Be careful about which memory
+					 * context to use. Alternatively, should we have a version
+					 * of ExecPrepareQual that can handle this for us?)
+					 */
+					AppendProvenances(estate->es_provenances,
+									  indexInfo->ii_PredicateProvenances,
+									  0);
+				}
 				predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
 				indexInfo->ii_PredicateState = predicate;
 			}
@@ -1100,6 +1128,10 @@ index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
 	 *
 	 * If we find any matching Vars, don't pass hint for index.  Otherwise
 	 * pass hint.
+	 *
+	 * We don't need the provenances list from RelationGetIndexExpressions
+	 * here, because we're only going to search the expression tree, not
+	 * execute it.
 	 */
 	idxExprs = RelationGetIndexExpressions(indexRelation);
 	hasexpression = index_expression_changed_walker((Node *) idxExprs,

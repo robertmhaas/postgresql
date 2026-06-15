@@ -109,7 +109,8 @@ extern char *ginbuildphasename(int64 phasenum);
 
 /* gininsert.c */
 extern IndexBuildResult *ginbuild(Relation heap, Relation index,
-								  struct IndexInfo *indexInfo);
+								  struct IndexInfo *indexInfo,
+								  struct Provenances *provenances);
 extern void ginbuildempty(Relation index);
 extern bool gininsert(Relation index, Datum *values, bool *isnull,
 					  ItemPointer ht_ctid, Relation heapRel,

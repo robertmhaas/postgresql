@@ -31,7 +31,6 @@
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
-#include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "tcop/tcopprot.h"
@@ -790,6 +789,7 @@ BeginCopyTo(ParseState *pstate,
 			Oid queryRelId,
 			const char *filename,
 			bool is_program,
+			Provenances *provenances,
 			copy_data_dest_cb data_dest_cb,
 			List *attnamelist,
 			List *options)
@@ -920,7 +920,8 @@ BeginCopyTo(ParseState *pstate,
 		 */
 		rewritten = pg_analyze_and_rewrite_fixedparams(raw_query,
 													   pstate->p_sourcetext, NULL, 0,
-													   NULL);
+													   NULL,
+													   provenances);
 
 		/* check that we got back something we can work with */
 		if (rewritten == NIL)
@@ -987,7 +988,8 @@ BeginCopyTo(ParseState *pstate,
 
 		/* plan the query */
 		plan = pg_plan_query(query, pstate->p_sourcetext,
-							 CURSOR_OPT_PARALLEL_OK, NULL, NULL);
+							 CURSOR_OPT_PARALLEL_OK, NULL, NULL,
+							 pstate->p_provenances);
 
 		/*
 		 * With row-level security and a user using "COPY relation TO", we

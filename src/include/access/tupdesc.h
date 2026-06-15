@@ -18,15 +18,18 @@
 #include "catalog/pg_attribute.h"
 #include "nodes/pg_list.h"
 
+typedef struct Provenances Provenances;
 
 typedef struct AttrDefault
 {
+	Oid			adoid;
 	AttrNumber	adnum;
 	char	   *adbin;			/* nodeToString representation of expr */
 } AttrDefault;
 
 typedef struct ConstrCheck
 {
+	Oid			ccoid;
 	char	   *ccname;
 	char	   *ccbin;			/* nodeToString representation of expr */
 	bool		ccenforced;
@@ -267,6 +270,7 @@ extern void TupleDescInitEntryCollation(TupleDesc desc,
 
 extern TupleDesc BuildDescFromLists(const List *names, const List *types, const List *typmods, const List *collations);
 
-extern Node *TupleDescGetDefault(TupleDesc tupdesc, AttrNumber attnum);
+extern Node *TupleDescGetDefault(TupleDesc tupdesc, AttrNumber attnum,
+								 Provenances *provenances, Oid relowner);
 
 #endif							/* TUPDESC_H */

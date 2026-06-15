@@ -188,10 +188,15 @@ make_path_cat_expr(RowExpr *rowexpr, AttrNumber path_varattno)
 	arr->location = -1;
 	arr->elements = list_make1(rowexpr);
 
+	/*
+	 * PROVENANCE-TODO: I suspect CommonTableExpr should carry a
+	 * ProvenanceIndex that is used here. Otherwise, how do we handle the
+	 * situation where rewriting introduces new CTEs?
+	 */
 	fexpr = makeFuncExpr(F_ARRAY_CAT, RECORDARRAYOID,
 						 list_make2(makeVar(1, path_varattno, RECORDARRAYOID, -1, 0, 0),
 									arr),
-						 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+						 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL, 0);
 
 	return (Expr *) fexpr;
 }
@@ -521,7 +526,13 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 			fs->resulttype = INT8OID;
 			fs->resulttypmod = -1;
 
-			fexpr = makeFuncExpr(F_INT8INC, INT8OID, list_make1(fs), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+			/*
+			 * PROVENANCE-TODO: As with the other makeFuncExpr() call in this
+			 * file, I suspect CommonTableExpr should carry a ProvenanceIndex.
+			 */
+			fexpr = makeFuncExpr(F_INT8INC, INT8OID, list_make1(fs),
+								 InvalidOid, InvalidOid,
+								 COERCE_EXPLICIT_CALL, 0);
 
 			linitial(search_col_rowexpr->args) = fexpr;
 

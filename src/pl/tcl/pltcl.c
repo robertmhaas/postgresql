@@ -151,6 +151,7 @@ typedef struct pltcl_proc_desc
 	unsigned long fn_refcount;	/* number of active references */
 	TransactionId fn_xmin;		/* xmin of pg_proc row */
 	ItemPointerData fn_tid;		/* TID of pg_proc row */
+	Provenances *provenances;	/* provenance for SPI calls */
 	bool		fn_readonly;	/* is function readonly? */
 	bool		lanpltrusted;	/* is it pltcl (vs. pltclu)? */
 	pltcl_interp_desc *interp_desc; /* interpreter to use */
@@ -1596,6 +1597,9 @@ compile_pltcl_function(Oid fn_oid, Oid tgreloid,
 		prodesc->fn_refcount = 0;
 		prodesc->fn_xmin = HeapTupleHeaderGetRawXmin(procTup->t_data);
 		prodesc->fn_tid = procTup->t_self;
+		prodesc->provenances =
+			InitProvenancesForCache(PROVENANCE_FUNCTION,
+									fn_oid, procStruct->proowner);
 		prodesc->nargs = procStruct->pronargs;
 		prodesc->arg_out_func = (FmgrInfo *) palloc0(prodesc->nargs * sizeof(FmgrInfo));
 		prodesc->arg_is_rowtype = (bool *) palloc0(prodesc->nargs * sizeof(bool));
@@ -2421,6 +2425,7 @@ pltcl_SPI_execute(ClientData cdata, Tcl_Interp *interp,
 	Tcl_Obj    *volatile loop_body = NULL;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	pltcl_proc_desc *prodesc = pltcl_current_call_state->prodesc;
 
 	enum options
 	{
@@ -2489,7 +2494,8 @@ pltcl_SPI_execute(ClientData cdata, Tcl_Interp *interp,
 	{
 		UTF_BEGIN;
 		spi_rc = SPI_execute(UTF_U2E(Tcl_GetString(objv[query_idx])),
-							 pltcl_current_call_state->prodesc->fn_readonly, count);
+							 prodesc->fn_readonly, count,
+							 prodesc->provenances);
 		UTF_END;
 
 		my_rc = pltcl_process_SPI_result(interp,
@@ -2643,6 +2649,7 @@ pltcl_SPI_prepare(ClientData cdata, Tcl_Interp *interp,
 	Tcl_HashTable *query_hash;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
+	pltcl_proc_desc *prodesc = pltcl_current_call_state->prodesc;
 
 	/************************************************************
 	 * Check the call syntax
@@ -2714,7 +2721,8 @@ pltcl_SPI_prepare(ClientData cdata, Tcl_Interp *interp,
 		 ************************************************************/
 		UTF_BEGIN;
 		qdesc->plan = SPI_prepare(UTF_U2E(Tcl_GetString(objv[1])),
-								  nargs, qdesc->argtypes);
+								  nargs, qdesc->argtypes,
+								  prodesc->provenances);
 		UTF_END;
 
 		if (qdesc->plan == NULL)
@@ -2743,7 +2751,7 @@ pltcl_SPI_prepare(ClientData cdata, Tcl_Interp *interp,
 	 * Insert a hashtable entry for the plan and return
 	 * the key to the caller
 	 ************************************************************/
-	query_hash = &pltcl_current_call_state->prodesc->interp_desc->query_hash;
+	query_hash = &prodesc->interp_desc->query_hash;
 
 	hashent = Tcl_CreateHashEntry(query_hash, qdesc->qname, &hashnew);
 	Tcl_SetHashValue(hashent, (ClientData) qdesc);
@@ -2778,6 +2786,7 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 	MemoryContext oldcontext = CurrentMemoryContext;
 	ResourceOwner oldowner = CurrentResourceOwner;
 	Tcl_HashTable *query_hash;
+	pltcl_proc_desc *prodesc = pltcl_current_call_state->prodesc;
 
 	enum options
 	{
@@ -2832,7 +2841,7 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 		return TCL_ERROR;
 	}
 
-	query_hash = &pltcl_current_call_state->prodesc->interp_desc->query_hash;
+	query_hash = &prodesc->interp_desc->query_hash;
 
 	hashent = Tcl_FindHashEntry(query_hash, Tcl_GetString(objv[i]));
 	if (hashent == NULL)
@@ -2944,7 +2953,7 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 		 * Execute the plan
 		 ************************************************************/
 		spi_rc = SPI_execute_plan(qdesc->plan, argvalues, nulls,
-								  pltcl_current_call_state->prodesc->fn_readonly,
+								  prodesc->fn_readonly,
 								  count);
 
 		my_rc = pltcl_process_SPI_result(interp,

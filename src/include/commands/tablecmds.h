@@ -21,11 +21,15 @@
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 
+/* to avoid including parser/parse_node.h */
+typedef struct ParseState ParseState;
+
 typedef struct AlterTableUtilityContext AlterTableUtilityContext;	/* avoid including
 																	 * tcop/utility.h here */
 
 
-extern ObjectAddress DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
+extern ObjectAddress DefineRelation(ParseState *pstate, CreateStmt *stmt,
+									char relkind, Oid ownerId,
 									ObjectAddress *typaddress, const char *queryString);
 
 extern TupleDesc BuildDescForRelation(const List *columns);
@@ -58,13 +62,14 @@ extern void AlterRelationNamespaceInternal(Relation classRel, Oid relOid,
 
 extern void CheckTableNotInUse(Relation rel, const char *stmt);
 
-extern void ExecuteTruncate(TruncateStmt *stmt);
+extern void ExecuteTruncate(ParseState *pstate, TruncateStmt *stmt);
 extern void ExecuteTruncateGuts(List *explicit_rels,
 								List *relids,
 								List *relids_logged,
 								DropBehavior behavior,
 								bool restart_seqs,
-								bool run_as_table_owner);
+								bool run_as_table_owner,
+								Provenances *provenances);
 
 extern void SetRelationHasSubclass(Oid relationId, bool relhassubclass);
 
@@ -106,6 +111,7 @@ extern void RangeVarCallbackMaintainsTable(const RangeVar *relation,
 extern void RangeVarCallbackOwnsRelation(const RangeVar *relation,
 										 Oid relId, Oid oldRelId, void *arg);
 extern bool PartConstraintImpliedByRelConstraint(Relation scanrel,
-												 List *partConstraint);
+												 List *partConstraint,
+												 Provenances *provenances);
 
 #endif							/* TABLECMDS_H */

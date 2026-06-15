@@ -27,7 +27,8 @@ extern ObjectAddress DefineDomain(ParseState *pstate, CreateDomainStmt *stmt);
 extern ObjectAddress DefineEnum(CreateEnumStmt *stmt);
 extern ObjectAddress DefineRange(ParseState *pstate, CreateRangeStmt *stmt);
 extern ObjectAddress AlterEnum(AlterEnumStmt *stmt);
-extern ObjectAddress DefineCompositeType(RangeVar *typevar, List *coldeflist);
+extern ObjectAddress DefineCompositeType(ParseState *pstate,
+										 RangeVar *typevar, List *coldeflist);
 extern Oid	AssignTypeArrayOid(void);
 extern Oid	AssignTypeMultirangeOid(void);
 extern Oid	AssignTypeMultirangeArrayOid(void);
@@ -35,8 +36,11 @@ extern Oid	AssignTypeMultirangeArrayOid(void);
 extern ObjectAddress AlterDomainDefault(List *names, Node *defaultRaw);
 extern ObjectAddress AlterDomainNotNull(List *names, bool notNull);
 extern ObjectAddress AlterDomainAddConstraint(List *names, Node *newConstraint,
-											  ObjectAddress *constrAddr);
-extern ObjectAddress AlterDomainValidateConstraint(List *names, const char *constrName);
+											  ObjectAddress *constrAddr,
+											  struct Provenances *provenances);
+extern ObjectAddress AlterDomainValidateConstraint(List *names,
+												   const char *constrName,
+												   struct Provenances *provenances);
 extern ObjectAddress AlterDomainDropConstraint(List *names, const char *constrName,
 											   DropBehavior behavior, bool missing_ok);
 

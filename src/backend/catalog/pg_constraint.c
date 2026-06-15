@@ -1672,6 +1672,7 @@ FindFKPeriodOpers(Oid opclass,
 {
 	Oid			opfamily = InvalidOid;
 	Oid			opcintype = InvalidOid;
+	Oid			dummy_opfamily;
 	StrategyNumber strat;
 
 	/* Make sure we have a range or multirange. */
@@ -1697,7 +1698,7 @@ FindFKPeriodOpers(Oid opclass,
 							   InvalidOid,
 							   COMPARE_CONTAINED_BY,
 							   containedbyoperoid,
-							   &strat);
+							   &strat, &dummy_opfamily);
 
 	/*
 	 * Now look up the ContainedBy operator. Its left arg must be the type of
@@ -1708,7 +1709,7 @@ FindFKPeriodOpers(Oid opclass,
 							   ANYMULTIRANGEOID,
 							   COMPARE_CONTAINED_BY,
 							   aggedcontainedbyoperoid,
-							   &strat);
+							   &strat, &dummy_opfamily);
 
 	switch (opcintype)
 	{

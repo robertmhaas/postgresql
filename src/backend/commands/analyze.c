@@ -38,6 +38,7 @@
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_relation.h"
 #include "pgstat.h"
@@ -78,11 +79,13 @@ static BufferAccessStrategy vac_strategy;
 static void do_analyze_rel(Relation onerel,
 						   const VacuumParams *params, List *va_cols,
 						   AcquireSampleRowsFunc acquirefunc, BlockNumber relpages,
-						   bool inh, bool in_outer_xact, int elevel);
+						   bool inh, bool in_outer_xact, int elevel,
+						   Provenances *provenances);
 static void compute_index_stats(Relation onerel, double totalrows,
 								AnlIndexData *indexdata, int nindexes,
 								HeapTuple *rows, int numrows,
-								MemoryContext col_context);
+								MemoryContext col_context,
+								Provenances *provenances);
 static void validate_va_cols_list(Relation onerel, List *va_cols);
 static VacAttrStats *examine_attribute(Relation onerel, int attnum,
 									   Node *index_expr);
@@ -109,7 +112,7 @@ static Datum ind_fetch_func(VacAttrStatsP stats, int rownum, bool *isNull);
 void
 analyze_rel(Oid relid, RangeVar *relation,
 			const VacuumParams *params, List *va_cols, bool in_outer_xact,
-			BufferAccessStrategy bstrategy)
+			BufferAccessStrategy bstrategy, Provenances *provenances)
 {
 	Relation	onerel;
 	int			elevel;
@@ -274,14 +277,15 @@ analyze_rel(Oid relid, RangeVar *relation,
 	if ((onerel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
 		&& !stats_imported)
 		do_analyze_rel(onerel, params, va_cols, acquirefunc,
-					   relpages, false, in_outer_xact, elevel);
+					   relpages, false, in_outer_xact, elevel,
+					   provenances);
 
 	/*
 	 * If there are child tables, do recursive ANALYZE.
 	 */
 	if (onerel->rd_rel->relhassubclass)
 		do_analyze_rel(onerel, params, va_cols, acquirefunc, relpages,
-					   true, in_outer_xact, elevel);
+					   true, in_outer_xact, elevel, provenances);
 
 	/*
 	 * Close source relation now, but keep lock so that no one deletes it
@@ -306,7 +310,7 @@ static void
 do_analyze_rel(Relation onerel, const VacuumParams *params,
 			   List *va_cols, AcquireSampleRowsFunc acquirefunc,
 			   BlockNumber relpages, bool inh, bool in_outer_xact,
-			   int elevel)
+			   int elevel, Provenances *provenances)
 {
 	int			attr_cnt,
 				tcnt,
@@ -336,6 +340,14 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 	BufferUsage bufferusage;
 	PgStat_Counter startreadtime = 0;
 	PgStat_Counter startwritetime = 0;
+	Provenances *analyze_provenances;
+
+	/*
+	 * provenances is the context in which the ANALYZE statement itself was
+	 * executed; for expression evaluation that takes place within ANALYZE, we
+	 * create a separate context.
+	 */
+	analyze_provenances = InitProvenances(provenances, 0);
 
 	verbose = (params->options & VACOPT_VERBOSE) != 0;
 	instrument = (verbose || (AmAutoVacuumWorkerProcess() &&
@@ -526,7 +538,8 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 	 * statistics target. So we may need to sample more rows and then build
 	 * the statistics with enough detail.
 	 */
-	minrows = ComputeExtStatisticsRows(onerel, attr_cnt, vacattrstats);
+	minrows = ComputeExtStatisticsRows(onerel, attr_cnt, vacattrstats,
+									   analyze_provenances);
 
 	if (targrows < minrows)
 		targrows = minrows;
@@ -599,7 +612,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 			compute_index_stats(onerel, totalrows,
 								indexdata, nindexes,
 								rows, numrows,
-								col_context);
+								col_context, analyze_provenances);
 
 		MemoryContextSwitchTo(old_context);
 		MemoryContextDelete(col_context);
@@ -622,7 +635,8 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 
 		/* Build extended statistics (if there are any). */
 		BuildRelationExtStatistics(onerel, inh, totalrows, numrows, rows,
-								   attr_cnt, vacattrstats);
+								   attr_cnt, vacattrstats,
+								   analyze_provenances);
 	}
 
 	pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
@@ -731,6 +745,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 			ivinfo.message_level = elevel;
 			ivinfo.num_heap_tuples = onerel->rd_rel->reltuples;
 			ivinfo.strategy = vac_strategy;
+			ivinfo.provenances = provenances;
 
 			stats = index_vacuum_cleanup(&ivinfo, NULL);
 
@@ -872,12 +887,17 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 
 /*
  * Compute statistics about indexes of a relation
+ *
+ * PROVENANCE-TODO: Once we have provenance indexes, the main loop will
+ * also need to translate the indexes on ii_Predicate (or get
+ * ExecPrepareQual to do it for us).
  */
 static void
 compute_index_stats(Relation onerel, double totalrows,
 					AnlIndexData *indexdata, int nindexes,
 					HeapTuple *rows, int numrows,
-					MemoryContext col_context)
+					MemoryContext col_context,
+					Provenances *provenances)
 {
 	MemoryContext ind_context,
 				old_context;
@@ -917,6 +937,16 @@ compute_index_stats(Relation onerel, double totalrows,
 		 * sure it gets cleaned up at the bottom of the loop.
 		 */
 		estate = CreateExecutorState();
+
+		/* Install provenances for index expression evaluation. */
+		estate->es_provenances = InitProvenances(provenances, 0);
+		if (indexInfo->ii_ExpressionProvenances != NULL)
+			AppendProvenances(estate->es_provenances,
+							  indexInfo->ii_ExpressionProvenances, 0);
+		if (indexInfo->ii_PredicateProvenances != NULL)
+			AppendProvenances(estate->es_provenances,
+							  indexInfo->ii_PredicateProvenances, 0);
+
 		econtext = GetPerTupleExprContext(estate);
 		/* Need a slot to hold the current heap tuple, too */
 		slot = MakeSingleTupleTableSlot(RelationGetDescr(onerel),

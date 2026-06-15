@@ -60,9 +60,11 @@ typedef struct SPICallbackArg
 static Portal SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 									   ParamListInfo paramLI, bool read_only);
 
-static void _SPI_prepare_plan(const char *src, SPIPlanPtr plan);
+static void _SPI_prepare_plan(const char *src, SPIPlanPtr plan,
+							  Provenances *provenances);
 
-static void _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan);
+static void _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan,
+									  Provenances *provenances);
 
 static int	_SPI_execute_plan(SPIPlanPtr plan, const SPIExecuteOptions *options,
 							  Snapshot snapshot, Snapshot crosscheck_snapshot,
@@ -594,7 +596,8 @@ SPI_inside_nonatomic_context(void)
 
 /* Parse, plan, and execute a query string */
 int
-SPI_execute(const char *src, bool read_only, long tcount)
+SPI_execute(const char *src, bool read_only, long tcount,
+			Provenances *provenances)
 {
 	_SPI_plan	plan;
 	SPIExecuteOptions options;
@@ -612,7 +615,7 @@ SPI_execute(const char *src, bool read_only, long tcount)
 	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = CURSOR_OPT_PARALLEL_OK;
 
-	_SPI_prepare_oneshot_plan(src, &plan);
+	_SPI_prepare_oneshot_plan(src, &plan, provenances);
 
 	memset(&options, 0, sizeof(options));
 	options.read_only = read_only;
@@ -628,15 +631,16 @@ SPI_execute(const char *src, bool read_only, long tcount)
 
 /* Obsolete version of SPI_execute */
 int
-SPI_exec(const char *src, long tcount)
+SPI_exec(const char *src, long tcount, Provenances *provenances)
 {
-	return SPI_execute(src, false, tcount);
+	return SPI_execute(src, false, tcount, provenances);
 }
 
 /* Parse, plan, and execute a query string, with extensible options */
 int
 SPI_execute_extended(const char *src,
-					 const SPIExecuteOptions *options)
+					 const SPIExecuteOptions *options,
+					 Provenances *provenances)
 {
 	int			res;
 	_SPI_plan	plan;
@@ -658,7 +662,7 @@ SPI_execute_extended(const char *src,
 		plan.parserSetupArg = options->params->parserSetupArg;
 	}
 
-	_SPI_prepare_oneshot_plan(src, &plan);
+	_SPI_prepare_oneshot_plan(src, &plan, provenances);
 
 	res = _SPI_execute_plan(&plan, options,
 							InvalidSnapshot, InvalidSnapshot,
@@ -813,7 +817,8 @@ int
 SPI_execute_with_args(const char *src,
 					  int nargs, Oid *argtypes,
 					  const Datum *Values, const char *Nulls,
-					  bool read_only, long tcount)
+					  bool read_only, long tcount,
+					  Provenances *provenances)
 {
 	int			res;
 	_SPI_plan	plan;
@@ -842,7 +847,7 @@ SPI_execute_with_args(const char *src,
 	paramLI = _SPI_convert_params(nargs, argtypes,
 								  Values, Nulls);
 
-	_SPI_prepare_oneshot_plan(src, &plan);
+	_SPI_prepare_oneshot_plan(src, &plan, provenances);
 
 	memset(&options, 0, sizeof(options));
 	options.params = paramLI;
@@ -858,14 +863,16 @@ SPI_execute_with_args(const char *src,
 }
 
 SPIPlanPtr
-SPI_prepare(const char *src, int nargs, Oid *argtypes)
+SPI_prepare(const char *src, int nargs, Oid *argtypes,
+			Provenances *provenances)
 {
-	return SPI_prepare_cursor(src, nargs, argtypes, 0);
+	return SPI_prepare_cursor(src, nargs, argtypes, 0, provenances);
 }
 
 SPIPlanPtr
 SPI_prepare_cursor(const char *src, int nargs, Oid *argtypes,
-				   int cursorOptions)
+				   int cursorOptions,
+				   Provenances *provenances)
 {
 	_SPI_plan	plan;
 	SPIPlanPtr	result;
@@ -889,7 +896,7 @@ SPI_prepare_cursor(const char *src, int nargs, Oid *argtypes,
 	plan.parserSetup = NULL;
 	plan.parserSetupArg = NULL;
 
-	_SPI_prepare_plan(src, &plan);
+	_SPI_prepare_plan(src, &plan, provenances);
 
 	/* copy plan to procedure context */
 	result = _SPI_make_plan_non_temp(&plan);
@@ -925,7 +932,7 @@ SPI_prepare_extended(const char *src,
 	plan.parserSetup = options->parserSetup;
 	plan.parserSetupArg = options->parserSetupArg;
 
-	_SPI_prepare_plan(src, &plan);
+	_SPI_prepare_plan(src, &plan, options->provenances);
 
 	/* copy plan to procedure context */
 	result = _SPI_make_plan_non_temp(&plan);
@@ -939,7 +946,8 @@ SPIPlanPtr
 SPI_prepare_params(const char *src,
 				   ParserSetupHook parserSetup,
 				   void *parserSetupArg,
-				   int cursorOptions)
+				   int cursorOptions,
+				   Provenances *provenances)
 {
 	_SPI_plan	plan;
 	SPIPlanPtr	result;
@@ -963,7 +971,7 @@ SPI_prepare_params(const char *src,
 	plan.parserSetup = parserSetup;
 	plan.parserSetupArg = parserSetupArg;
 
-	_SPI_prepare_plan(src, &plan);
+	_SPI_prepare_plan(src, &plan, provenances);
 
 	/* copy plan to procedure context */
 	result = _SPI_make_plan_non_temp(&plan);
@@ -1474,7 +1482,8 @@ SPI_cursor_open_with_args(const char *name,
 						  const char *src,
 						  int nargs, Oid *argtypes,
 						  Datum *Values, const char *Nulls,
-						  bool read_only, int cursorOptions)
+						  bool read_only, int cursorOptions,
+						  Provenances *provenances)
 {
 	Portal		result;
 	_SPI_plan	plan;
@@ -1503,7 +1512,7 @@ SPI_cursor_open_with_args(const char *name,
 	paramLI = _SPI_convert_params(nargs, argtypes,
 								  Values, Nulls);
 
-	_SPI_prepare_plan(src, &plan);
+	_SPI_prepare_plan(src, &plan, provenances);
 
 	/* We needn't copy the plan; SPI_cursor_open_internal will do so */
 
@@ -1555,7 +1564,7 @@ SPI_cursor_parse_open(const char *name,
 		plan.parserSetupArg = options->params->parserSetupArg;
 	}
 
-	_SPI_prepare_plan(src, &plan);
+	_SPI_prepare_plan(src, &plan, options->provenances);
 
 	/* We needn't copy the plan; SPI_cursor_open_internal will do so */
 
@@ -2218,7 +2227,8 @@ spi_printtup(TupleTableSlot *slot, DestReceiver *self)
  * parsing is also left in CurrentMemoryContext.
  */
 static void
-_SPI_prepare_plan(const char *src, SPIPlanPtr plan)
+_SPI_prepare_plan(const char *src, SPIPlanPtr plan,
+				  Provenances *provenances)
 {
 	List	   *raw_parsetree_list;
 	List	   *plancache_list;
@@ -2252,6 +2262,7 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 		RawStmt    *parsetree = lfirst_node(RawStmt, list_item);
 		List	   *stmt_list;
 		CachedPlanSource *plansource;
+		Provenances *rewrite_provenances = copyObject(provenances);
 
 		/*
 		 * Create the CachedPlanSource before we do parse analysis, since it
@@ -2259,7 +2270,8 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 		 */
 		plansource = CreateCachedPlan(parsetree,
 									  src,
-									  CreateCommandTag(parsetree->stmt));
+									  CreateCommandTag(parsetree->stmt),
+									  provenances);
 
 		/*
 		 * Parameter datatypes are driven by parserSetup hook if provided,
@@ -2272,7 +2284,8 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 													  src,
 													  plan->parserSetup,
 													  plan->parserSetupArg,
-													  _SPI_current->queryEnv);
+													  _SPI_current->queryEnv,
+													  rewrite_provenances);
 		}
 		else
 		{
@@ -2280,7 +2293,8 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 														   src,
 														   plan->argtypes,
 														   plan->nargs,
-														   _SPI_current->queryEnv);
+														   _SPI_current->queryEnv,
+														   rewrite_provenances);
 		}
 
 		/* Finish filling in the CachedPlanSource */
@@ -2292,7 +2306,8 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 						   plan->parserSetup,
 						   plan->parserSetupArg,
 						   plan->cursor_options,
-						   false);	/* not fixed result */
+						   false,	/* not fixed result */
+						   rewrite_provenances);
 
 		plancache_list = lappend(plancache_list, plansource);
 	}
@@ -2326,7 +2341,8 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
  * parsing is also left in CurrentMemoryContext.
  */
 static void
-_SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan)
+_SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan,
+						  Provenances *provenances)
 {
 	List	   *raw_parsetree_list;
 	List	   *plancache_list;
@@ -2361,7 +2377,8 @@ _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan)
 
 		plansource = CreateOneShotCachedPlan(parsetree,
 											 src,
-											 CreateCommandTag(parsetree->stmt));
+											 CreateCommandTag(parsetree->stmt),
+											 provenances);
 
 		plancache_list = lappend(plancache_list, plansource);
 	}
@@ -2511,6 +2528,7 @@ _SPI_execute_plan(SPIPlanPtr plan, const SPIExecuteOptions *options,
 			RawStmt    *parsetree = plansource->raw_parse_tree;
 			const char *src = plansource->query_string;
 			List	   *querytree_list;
+			Provenances *provenances = plansource->parse_provenances;
 
 			/*
 			 * Parameter datatypes are driven by parserSetup hook if provided,
@@ -2525,7 +2543,8 @@ _SPI_execute_plan(SPIPlanPtr plan, const SPIExecuteOptions *options,
 															   src,
 															   plan->parserSetup,
 															   plan->parserSetupArg,
-															   _SPI_current->queryEnv);
+															   _SPI_current->queryEnv,
+															   provenances);
 			}
 			else
 			{
@@ -2533,7 +2552,8 @@ _SPI_execute_plan(SPIPlanPtr plan, const SPIExecuteOptions *options,
 																	src,
 																	plan->argtypes,
 																	plan->nargs,
-																	_SPI_current->queryEnv);
+																	_SPI_current->queryEnv,
+																	provenances);
 			}
 
 			/* Finish filling in the CachedPlanSource */
@@ -2545,7 +2565,8 @@ _SPI_execute_plan(SPIPlanPtr plan, const SPIExecuteOptions *options,
 							   plan->parserSetup,
 							   plan->parserSetupArg,
 							   plan->cursor_options,
-							   false);	/* not fixed result */
+							   false,	/* not fixed result */
+							   provenances);
 		}
 
 		/*

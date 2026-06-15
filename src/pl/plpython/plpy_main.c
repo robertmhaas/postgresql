@@ -241,6 +241,7 @@ plpython3_inline_handler(PG_FUNCTION_ARGS)
 									  ALLOCSET_DEFAULT_SIZES);
 	proc.pyname = MemoryContextStrdup(proc.mcxt, "__plpython_inline_block");
 	proc.langid = codeblock->langOid;
+	proc.provenances = codeblock->provenances;
 
 	/*
 	 * This is currently sufficient to get PLy_exec_function to work, but

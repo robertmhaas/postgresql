@@ -52,6 +52,7 @@ sub elem
 # it matches the list of files passed on the command line.
 my @all_input_files = qw(
   nodes/nodes.h
+  nodes/provenance.h
   nodes/primnodes.h
   nodes/parsenodes.h
   nodes/pathnodes.h
@@ -122,7 +123,7 @@ my @nodetag_only;
 # types that are copied by straight assignment
 my @scalar_types = qw(
   bool char double int int8 int16 int32 int64 long uint8 uint16 uint32 uint64
-  AclMode AttrNumber Cardinality Cost Index Oid RelFileNumber Selectivity Size StrategyNumber SubTransactionId TimeLineID XLogRecPtr
+  AclMode AttrNumber Cardinality Cost Index Oid ProvenanceIndex RelFileNumber Selectivity Size StrategyNumber SubTransactionId TimeLineID XLogRecPtr
 );
 
 # collect enum types
@@ -997,6 +998,12 @@ _read${n}(void)
 		{
 			print $off "\tWRITE_LOCATION_FIELD($f);\n";
 			print $rff "\tREAD_LOCATION_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'ProvenanceIndex')
+		{
+			print $off "\tWRITE_INT_FIELD($f);\n";
+			print $rff "\tREAD_PROVENANCE_INDEX_FIELD($f);\n"
+			  unless $no_read;
 		}
 		elsif ($t eq 'int'
 			|| $t eq 'int16'

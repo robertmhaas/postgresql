@@ -1494,10 +1494,10 @@ generate_series_int8_support(PG_FUNCTION_ARGS)
 					   *arg3;
 
 			/* We can use estimated argument values here */
-			arg1 = estimate_expression_value(req->root, linitial(args));
-			arg2 = estimate_expression_value(req->root, lsecond(args));
+			arg1 = estimate_expression_value(req->root, linitial(args), NULL);
+			arg2 = estimate_expression_value(req->root, lsecond(args), NULL);
 			if (list_length(args) >= 3)
-				arg3 = estimate_expression_value(req->root, lthird(args));
+				arg3 = estimate_expression_value(req->root, lthird(args), NULL);
 			else
 				arg3 = NULL;
 

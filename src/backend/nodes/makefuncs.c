@@ -20,6 +20,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
+#include "nodes/provenance.h"
 
 
 /*
@@ -592,7 +593,8 @@ makeColumnDef(const char *colname, Oid typeOid, int32 typmod, Oid collOid)
  */
 FuncExpr *
 makeFuncExpr(Oid funcid, Oid rettype, List *args,
-			 Oid funccollid, Oid inputcollid, CoercionForm fformat)
+			 Oid funccollid, Oid inputcollid, CoercionForm fformat,
+			 ProvenanceIndex pidx)
 {
 	FuncExpr   *funcexpr;
 
@@ -605,6 +607,7 @@ makeFuncExpr(Oid funcid, Oid rettype, List *args,
 	funcexpr->funccollid = funccollid;
 	funcexpr->inputcollid = inputcollid;
 	funcexpr->args = args;
+	funcexpr->pidx = pidx;
 	funcexpr->location = -1;
 
 	return funcexpr;
@@ -831,8 +834,10 @@ make_ands_implicit(Expr *clause)
  *	  create an IndexInfo node
  */
 IndexInfo *
-makeIndexInfo(int numattrs, int numkeyattrs, Oid amoid, List *expressions,
-			  List *predicates, bool unique, bool nulls_not_distinct,
+makeIndexInfo(int numattrs, int numkeyattrs, Oid amoid,
+			  List *expressions, Provenances *expression_provenances,
+			  List *predicates, Provenances *predicate_provenances,
+			  bool unique, bool nulls_not_distinct,
 			  bool isready, bool concurrent, bool summarizing,
 			  bool withoutoverlaps)
 {
@@ -856,10 +861,12 @@ makeIndexInfo(int numattrs, int numkeyattrs, Oid amoid, List *expressions,
 
 	/* expressions */
 	n->ii_Expressions = expressions;
+	n->ii_ExpressionProvenances = expression_provenances;
 	n->ii_ExpressionsState = NIL;
 
 	/* predicates  */
 	n->ii_Predicate = predicates;
+	n->ii_PredicateProvenances = predicate_provenances;
 	n->ii_PredicateState = NULL;
 
 	/* exclusion constraints */

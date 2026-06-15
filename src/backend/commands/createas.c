@@ -52,6 +52,7 @@ typedef struct
 {
 	DestReceiver pub;			/* publicly-known function pointers */
 	IntoClause *into;			/* target relation specification */
+	Provenances *provenances;	/* provenance for DefineRelation */
 	/* These fields are filled by intorel_startup: */
 	Relation	rel;			/* relation to write to */
 	ObjectAddress reladdr;		/* address of rel, for ExecCreateTableAs */
@@ -61,8 +62,10 @@ typedef struct
 } DR_intorel;
 
 /* utility functions for CTAS definition creation */
-static ObjectAddress create_ctas_internal(List *attrList, IntoClause *into);
-static ObjectAddress create_ctas_nodata(List *tlist, IntoClause *into);
+static ObjectAddress create_ctas_internal(List *attrList, IntoClause *into,
+										  Provenances *provenances);
+static ObjectAddress create_ctas_nodata(List *tlist, IntoClause *into,
+										Provenances *provenances);
 
 /* DestReceiver routines for collecting data */
 static void intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
@@ -79,9 +82,11 @@ static void intorel_destroy(DestReceiver *self);
  * provide a list of attributes (ColumnDef nodes).
  */
 static ObjectAddress
-create_ctas_internal(List *attrList, IntoClause *into)
+create_ctas_internal(List *attrList, IntoClause *into,
+					 Provenances *provenances)
 {
 	CreateStmt *create = makeNode(CreateStmt);
+	ParseState *pstate;
 	bool		is_matview;
 	char		relkind;
 	Datum		toast_options;
@@ -111,7 +116,10 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	 * Create the relation.  (This will error out if there's an existing view,
 	 * so we don't need more code to complain if "replace" is false.)
 	 */
-	intoRelationAddr = DefineRelation(create, relkind, InvalidOid, NULL, NULL);
+	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
+	intoRelationAddr = DefineRelation(pstate, create, relkind, InvalidOid,
+									  NULL, NULL);
 
 	/*
 	 * If necessary, create a TOAST table for the target table.  Note that
@@ -129,7 +137,8 @@ create_ctas_internal(List *attrList, IntoClause *into)
 
 	(void) heap_reloptions(RELKIND_TOASTVALUE, toast_options, true);
 
-	NewRelationCreateToastTable(intoRelationAddr.objectId, toast_options);
+	NewRelationCreateToastTable(intoRelationAddr.objectId, toast_options,
+								provenances);
 
 	/* Create the "view" part of a materialized view. */
 	if (is_matview)
@@ -152,7 +161,7 @@ create_ctas_internal(List *attrList, IntoClause *into)
  * the targetlist of the SELECT or view definition.
  */
 static ObjectAddress
-create_ctas_nodata(List *tlist, IntoClause *into)
+create_ctas_nodata(List *tlist, IntoClause *into, Provenances *provenances)
 {
 	List	   *attrList;
 	ListCell   *t,
@@ -212,7 +221,7 @@ create_ctas_nodata(List *tlist, IntoClause *into)
 				 errmsg("too many column names were specified")));
 
 	/* Create the relation definition using the ColumnDef list */
-	return create_ctas_internal(attrList, into);
+	return create_ctas_internal(attrList, into, provenances);
 }
 
 
@@ -239,7 +248,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	/*
 	 * Create the tuple receiver object and insert info it will need
 	 */
-	dest = CreateIntoRelDestReceiver(into);
+	dest = CreateIntoRelDestReceiver(into, pstate->p_provenances);
 
 	/* Query contained by CTAS needs to be jumbled if requested */
 	if (IsQueryIdEnabled())
@@ -285,7 +294,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		 * similar to CREATE VIEW.  This avoids dump/restore problems stemming
 		 * from running the planner before all dependencies are set up.
 		 */
-		address = create_ctas_nodata(query->targetList, into);
+		address = create_ctas_nodata(query->targetList, into,
+									 pstate->p_provenances);
 
 		/*
 		 * For materialized views, reuse the REFRESH logic, which locks down
@@ -294,7 +304,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		 */
 		if (do_refresh)
 			RefreshMatViewByOid(address.objectId, true, false, false,
-								pstate->p_sourcetext, qc);
+								pstate->p_sourcetext, qc,
+								pstate->p_provenances);
 
 	}
 	else
@@ -311,7 +322,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		 * either came straight from the parser, or suitable locks were
 		 * acquired by plancache.c.
 		 */
-		rewritten = QueryRewrite(query);
+		rewritten = QueryRewrite(query, pstate->p_provenances);
 
 		/* SELECT should never rewrite to more or less than one SELECT query */
 		if (list_length(rewritten) != 1)
@@ -321,7 +332,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 		/* plan the query */
 		plan = pg_plan_query(query, pstate->p_sourcetext,
-							 CURSOR_OPT_PARALLEL_OK, params, NULL);
+							 CURSOR_OPT_PARALLEL_OK, params, NULL,
+							 pstate->p_provenances);
 
 		/*
 		 * Use a snapshot with an updated command ID to ensure this query sees
@@ -437,7 +449,8 @@ CreateTableAsRelExists(CreateTableAsStmt *ctas)
  * self->into to be filled in immediately for other callers.
  */
 DestReceiver *
-CreateIntoRelDestReceiver(IntoClause *intoClause)
+CreateIntoRelDestReceiver(IntoClause *intoClause,
+						  Provenances *provenances)
 {
 	DR_intorel *self = palloc0_object(DR_intorel);
 
@@ -447,6 +460,7 @@ CreateIntoRelDestReceiver(IntoClause *intoClause)
 	self->pub.rDestroy = intorel_destroy;
 	self->pub.mydest = DestIntoRel;
 	self->into = intoClause;
+	self->provenances = provenances;
 	/* other private fields will be set during intorel_startup */
 
 	return (DestReceiver *) self;
@@ -525,7 +539,8 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	/*
 	 * Actually create the target table
 	 */
-	intoRelationAddr = create_ctas_internal(attrList, into);
+	intoRelationAddr = create_ctas_internal(attrList, into,
+											myState->provenances);
 
 	/*
 	 * Finally we can open the target table

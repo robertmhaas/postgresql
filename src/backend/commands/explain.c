@@ -204,7 +204,8 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 	 * came straight from the parser, or suitable locks were acquired by
 	 * plancache.c.
 	 */
-	rewritten = QueryRewrite(castNode(Query, stmt->query));
+	rewritten = QueryRewrite(castNode(Query, stmt->query),
+							 pstate->p_provenances);
 
 	/* emit opening boilerplate */
 	ExplainBeginOutput(es);
@@ -310,10 +311,14 @@ ExplainOneQuery(Query *query, int cursorOptions,
 	/* if an advisor plugin is present, let it manage things */
 	if (ExplainOneQuery_hook)
 		(*ExplainOneQuery_hook) (query, cursorOptions, into, es,
-								 pstate->p_sourcetext, params, pstate->p_queryEnv);
+								 pstate->p_sourcetext, params,
+								 pstate->p_queryEnv,
+								 pstate->p_provenances);
 	else
 		standard_ExplainOneQuery(query, cursorOptions, into, es,
-								 pstate->p_sourcetext, params, pstate->p_queryEnv);
+								 pstate->p_sourcetext, params,
+								 pstate->p_queryEnv,
+								 pstate->p_provenances);
 }
 
 /*
@@ -324,7 +329,8 @@ void
 standard_ExplainOneQuery(Query *query, int cursorOptions,
 						 IntoClause *into, ExplainState *es,
 						 const char *queryString, ParamListInfo params,
-						 QueryEnvironment *queryEnv)
+						 QueryEnvironment *queryEnv,
+						 Provenances *provenances)
 {
 	PlannedStmt *plan;
 	instr_time	planstart,
@@ -356,7 +362,8 @@ standard_ExplainOneQuery(Query *query, int cursorOptions,
 	INSTR_TIME_SET_CURRENT(planstart);
 
 	/* plan the query */
-	plan = pg_plan_query(query, queryString, cursorOptions, params, es);
+	plan = pg_plan_query(query, queryString, cursorOptions, params, es,
+						 provenances);
 
 	INSTR_TIME_SET_CURRENT(planduration);
 	INSTR_TIME_SUBTRACT(planduration, planstart);
@@ -431,7 +438,8 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 			jstate = JumbleQuery(ctas_query);
 		if (post_parse_analyze_hook)
 			(*post_parse_analyze_hook) (pstate, ctas_query, jstate);
-		rewritten = QueryRewrite(ctas_query);
+		rewritten = QueryRewrite(ctas_query,
+								 pstate->p_provenances);
 		Assert(list_length(rewritten) == 1);
 		ExplainOneQuery(linitial_node(Query, rewritten),
 						CURSOR_OPT_PARALLEL_OK, ctas->into, es,
@@ -458,7 +466,8 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 		if (post_parse_analyze_hook)
 			(*post_parse_analyze_hook) (pstate, dcs_query, jstate);
 
-		rewritten = QueryRewrite(dcs_query);
+		rewritten = QueryRewrite(dcs_query,
+								 pstate->p_provenances);
 		Assert(list_length(rewritten) == 1);
 		ExplainOneQuery(linitial_node(Query, rewritten),
 						dcs->options, NULL, es,
@@ -548,7 +557,8 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 	 * client.)
 	 */
 	if (into)
-		dest = CreateIntoRelDestReceiver(into);
+		dest = CreateIntoRelDestReceiver(into,
+										 plannedstmt->provenances);
 	else if (es->serialize != EXPLAIN_SERIALIZE_NONE)
 		dest = CreateExplainSerializeDestReceiver(es);
 	else

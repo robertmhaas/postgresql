@@ -15,14 +15,16 @@
 #define REWRITEHANDLER_H
 
 #include "nodes/parsenodes.h"
+#include "nodes/provenance.h"
 #include "utils/relcache.h"
 
-extern List *QueryRewrite(Query *parsetree);
+extern List *QueryRewrite(Query *parsetree, Provenances *provenances);
 extern void AcquireRewriteLocks(Query *parsetree,
 								bool forExecute,
 								bool forUpdatePushedDown);
 
-extern Node *build_column_default(Relation rel, int attrno);
+extern Node *build_column_default(Relation rel, int attrno,
+								  Provenances *provenances);
 
 extern Query *get_view_query(Relation view);
 extern bool view_has_instead_trigger(Relation view, CmdType event,
@@ -38,7 +40,10 @@ extern void error_view_not_updatable(Relation view,
 									 List *mergeActionList,
 									 const char *detail);
 
-extern Node *expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index);
-extern Node *build_generation_expression(Relation rel, int attrno);
+extern Node *expand_generated_columns_in_expr(Node *node, Relation rel,
+											  int rt_index,
+											  Provenances *provenances);
+extern Node *build_generation_expression(Relation rel, int attrno,
+										 Provenances *provenances);
 
 #endif							/* REWRITEHANDLER_H */

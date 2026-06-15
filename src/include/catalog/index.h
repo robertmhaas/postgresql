@@ -22,6 +22,7 @@
  * forward references in this file
  */
 typedef struct AttrMap AttrMap;
+typedef struct Provenances Provenances;
 
 
 #define DEFAULT_INDEX_TYPE	"btree"
@@ -93,7 +94,8 @@ extern Oid	index_create(Relation heapRelation,
 						 uint16 constr_flags,
 						 bool allow_system_table_mods,
 						 bool is_internal,
-						 Oid *constraintId);
+						 Oid *constraintId,
+						 Provenances *provenances);
 
 #define	INDEX_CONSTR_CREATE_MARK_AS_PRIMARY	(1 << 0)
 #define	INDEX_CONSTR_CREATE_DEFERRABLE		(1 << 1)
@@ -104,10 +106,12 @@ extern Oid	index_create(Relation heapRelation,
 
 extern Oid	index_create_copy(Relation heapRelation, uint16 flags,
 							  Oid oldIndexId, Oid tablespaceOid,
-							  const char *newName);
+							  const char *newName,
+							  Provenances *provenances);
 
 extern void index_concurrently_build(Oid heapRelationId,
-									 Oid indexRelationId);
+									 Oid indexRelationId,
+									 Provenances *provenances);
 
 extern void index_concurrently_swap(Oid newIndexId,
 									Oid oldIndexId,
@@ -150,9 +154,11 @@ extern void index_build(Relation heapRelation,
 						IndexInfo *indexInfo,
 						bool isreindex,
 						bool parallel,
-						bool progress);
+						bool progress,
+						Provenances *provenances);
 
-extern void validate_index(Oid heapId, Oid indexId, Snapshot snapshot);
+extern void validate_index(Oid heapId, Oid indexId, Snapshot snapshot,
+						   Provenances *provenances);
 
 extern void index_set_state_flags(Oid indexId, IndexStateFlagsAction action);
 
@@ -160,7 +166,8 @@ extern Oid	IndexGetRelation(Oid indexId, bool missing_ok);
 
 extern void reindex_index(const ReindexStmt *stmt, Oid indexId,
 						  bool skip_constraint_checks, char persistence,
-						  const ReindexParams *params);
+						  const ReindexParams *params,
+						  Provenances *provenances);
 
 /* Flag bits for reindex_relation(): */
 #define REINDEX_REL_PROCESS_TOAST			0x01
@@ -170,7 +177,8 @@ extern void reindex_index(const ReindexStmt *stmt, Oid indexId,
 #define REINDEX_REL_FORCE_INDEXES_PERMANENT 0x10
 
 extern bool reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
-							 const ReindexParams *params);
+							 const ReindexParams *params,
+							 Provenances *provenances);
 
 extern bool ReindexIsProcessingHeap(Oid heapOid);
 extern bool ReindexIsProcessingIndex(Oid indexOid);

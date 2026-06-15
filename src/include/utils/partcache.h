@@ -30,6 +30,7 @@ typedef struct PartitionKeyData
 								 * partition key or 0 if it's an expr */
 	List	   *partexprs;		/* list of expressions in the partitioning
 								 * key, one for each zero-valued partattrs */
+	Provenances *partexprs_provenances; /* provenances for partexprs */
 
 	Oid		   *partopfamily;	/* OIDs of operator families */
 	Oid		   *partopcintype;	/* OIDs of opclass declared input data types */
@@ -49,7 +50,7 @@ typedef struct PartitionKeyData
 
 
 extern PartitionKey RelationGetPartitionKey(Relation rel);
-extern List *RelationGetPartitionQual(Relation rel);
+extern List *RelationGetPartitionQual(Relation rel, Provenances *provenances);
 extern Expr *get_partition_qual_relid(Oid relid);
 
 /*

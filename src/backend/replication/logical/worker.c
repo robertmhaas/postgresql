@@ -898,6 +898,9 @@ create_edata_for_relation(LogicalRepRelMapEntry *rel)
 	ExecInitRangeTable(estate, list_make1(rte), perminfos,
 					   bms_make_singleton(1));
 
+	estate->es_provenances =
+		InitProvenances(MySubscription->provenances, 0);
+
 	edata->targetRelInfo = resultRelInfo = makeNode(ResultRelInfo);
 
 	/*
@@ -996,12 +999,13 @@ slot_fill_defaults(LogicalRepRelMapEntry *rel, EState *estate,
 		if (rel->attrmap->attnums[attnum] >= 0)
 			continue;
 
-		defexpr = (Expr *) build_column_default(rel->localrel, attnum + 1);
+		defexpr = (Expr *) build_column_default(rel->localrel, attnum + 1,
+												estate->es_provenances);
 
 		if (defexpr != NULL)
 		{
 			/* Run the expression through planner */
-			defexpr = expression_planner(defexpr);
+			defexpr = expression_planner(defexpr, estate->es_provenances);
 
 			/* Initialize executable expression in copycontext */
 			defexprs[num_defaults] = ExecInitExpr(defexpr, NULL);
@@ -3772,7 +3776,8 @@ apply_handle_truncate(StringInfo s)
 						relids_logged,
 						DROP_RESTRICT,
 						restart_seqs,
-						!MySubscription->runasowner);
+						!MySubscription->runasowner,
+						MySubscription->provenances);
 	foreach(lc, remote_rels)
 	{
 		LogicalRepRelMapEntry *rel = lfirst(lc);

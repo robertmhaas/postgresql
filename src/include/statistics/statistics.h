@@ -100,10 +100,12 @@ extern MCVList *statext_mcv_load(Oid mvoid, bool inh);
 
 extern void BuildRelationExtStatistics(Relation onerel, bool inh, double totalrows,
 									   int numrows, HeapTuple *rows,
-									   int natts, VacAttrStats **vacattrstats);
+									   int natts, VacAttrStats **vacattrstats,
+									   struct Provenances *provenances);
 extern bool HasRelationExtStatistics(Relation onerel);
 extern int	ComputeExtStatisticsRows(Relation onerel,
-									 int natts, VacAttrStats **vacattrstats);
+									 int natts, VacAttrStats **vacattrstats,
+									 struct Provenances *provenances);
 extern bool statext_is_kind_built(HeapTuple htup, char type);
 extern Selectivity dependencies_clauselist_selectivity(PlannerInfo *root,
 													   List *clauses,

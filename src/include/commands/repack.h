@@ -20,6 +20,7 @@
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 
+typedef struct Provenances Provenances;
 
 /* flag bits for ClusterParams->options */
 #define CLUOPT_VERBOSE 0x01		/* print progress info */
@@ -41,13 +42,15 @@ extern PGDLLIMPORT volatile sig_atomic_t RepackMessagePending;
 extern void ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel);
 
 extern void cluster_rel(RepackCommand cmd, Relation OldHeap, Oid indexOid,
-						ClusterParams *params, bool isTopLevel);
+						ClusterParams *params, bool isTopLevel,
+						Provenances *provenances);
 extern void check_index_is_clusterable(Relation OldHeap, Oid indexOid,
 									   LOCKMODE lockmode);
 extern void mark_index_clustered(Relation rel, Oid indexOid, bool is_internal);
 
 extern Oid	make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
-						  char relpersistence, LOCKMODE lockmode);
+						  char relpersistence, LOCKMODE lockmode,
+						  Provenances *provenances);
 extern void finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 							 bool is_system_catalog,
 							 bool swap_toast_by_content,
@@ -56,7 +59,8 @@ extern void finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 							 bool reindex,
 							 TransactionId frozenXid,
 							 MultiXactId cutoffMulti,
-							 char newrelpersistence);
+							 char newrelpersistence,
+							 Provenances *provenances);
 
 extern void HandleRepackMessageInterrupt(void);
 extern void ProcessRepackMessages(void);

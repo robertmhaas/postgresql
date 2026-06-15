@@ -2408,7 +2408,8 @@ AddRelationNewConstraints(Relation rel,
 						  bool allow_merge,
 						  bool is_local,
 						  bool is_internal,
-						  const char *queryString)
+						  const char *queryString,
+						  Provenances *provenances)
 {
 	List	   *cookedConstraints = NIL;
 	TupleDesc	tupleDesc;
@@ -2438,6 +2439,7 @@ AddRelationNewConstraints(Relation rel,
 	 */
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
+	pstate->p_provenances = provenances;
 	nsitem = addRangeTableEntryForRelation(pstate,
 										   rel,
 										   AccessShareLock,
@@ -2525,8 +2527,11 @@ AddRelationNewConstraints(Relation rel,
 				/*
 				 * Here, we assume the parser will only pass us valid CHECK
 				 * expressions, so we do no particular checking.
+				 *
+				 * PROVENANCE-TODO: It is entirely unclear to me what value to
+				 * pass here.
 				 */
-				expr = stringToNode(cdef->cooked_expr);
+				expr = stringToNode(cdef->cooked_expr, -2);
 			}
 
 			/*
@@ -2779,7 +2784,8 @@ MergeWithExistingConstraint(Relation rel, const char *ccname, Node *expr,
 			if (isnull)
 				elog(ERROR, "null conbin for rel %s",
 					 RelationGetRelationName(rel));
-			if (equal(expr, stringToNode(TextDatumGetCString(val))))
+			if (equal(expr, stringToNode(TextDatumGetCString(val),
+										 PI_NEVER_EXECUTED)))
 				found = true;
 		}
 
@@ -3362,7 +3368,8 @@ cookDefault(ParseState *pstate,
 		check_nested_generated(pstate, expr);
 
 		/* Disallow mutable functions */
-		if (contain_mutable_functions_after_planning((Expr *) expr))
+		if (contain_mutable_functions_after_planning((Expr *) expr,
+													 pstate->p_provenances))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 					 errmsg("generation expression is not immutable")));
@@ -3559,7 +3566,7 @@ RemoveStatistics(Oid relid, AttrNumber attnum)
  * the specified relation.  Caller must hold exclusive lock on rel.
  */
 static void
-RelationTruncateIndexes(Relation heapRelation)
+RelationTruncateIndexes(Relation heapRelation, Provenances *provenances)
 {
 	ListCell   *indlist;
 
@@ -3591,7 +3598,7 @@ RelationTruncateIndexes(Relation heapRelation)
 		/* Initialize the index and rebuild */
 		/* Note: we do not need to re-establish pkey setting */
 		index_build(heapRelation, currentIndex, indexInfo, true, false,
-					true);
+					true, provenances);
 
 		/* We're done with this index */
 		index_close(currentIndex, NoLock);
@@ -3608,7 +3615,7 @@ RelationTruncateIndexes(Relation heapRelation)
  * ON COMMIT truncation of temporary tables, where it doesn't matter.
  */
 void
-heap_truncate(List *relids)
+heap_truncate(List *relids, Provenances *provenances)
 {
 	List	   *relations = NIL;
 	ListCell   *cell;
@@ -3632,7 +3639,7 @@ heap_truncate(List *relids)
 		Relation	rel = lfirst(cell);
 
 		/* Truncate the relation */
-		heap_truncate_one_rel(rel);
+		heap_truncate_one_rel(rel, provenances);
 
 		/* Close the relation, but keep exclusive lock on it until commit */
 		table_close(rel, NoLock);
@@ -3649,7 +3656,7 @@ heap_truncate(List *relids)
  * checked permissions etc, and must have obtained AccessExclusiveLock.
  */
 void
-heap_truncate_one_rel(Relation rel)
+heap_truncate_one_rel(Relation rel, Provenances *provenances)
 {
 	Oid			toastrelid;
 
@@ -3664,7 +3671,7 @@ heap_truncate_one_rel(Relation rel)
 	table_relation_nontransactional_truncate(rel);
 
 	/* If the relation has indexes, truncate the indexes too */
-	RelationTruncateIndexes(rel);
+	RelationTruncateIndexes(rel, provenances);
 
 	/* If there is a toast table, truncate that too */
 	toastrelid = rel->rd_rel->reltoastrelid;
@@ -3673,7 +3680,7 @@ heap_truncate_one_rel(Relation rel)
 		Relation	toastrel = table_open(toastrelid, AccessExclusiveLock);
 
 		table_relation_nontransactional_truncate(toastrel);
-		RelationTruncateIndexes(toastrel);
+		RelationTruncateIndexes(toastrel, provenances);
 		/* keep the lock... */
 		table_close(toastrel, NoLock);
 	}

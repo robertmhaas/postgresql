@@ -727,6 +727,29 @@ _outA_Const(StringInfo str, const A_Const *node)
 	WRITE_LOCATION_FIELD(location);
 }
 
+static void
+_outProvenances(StringInfo str, const Provenances *node)
+{
+	WRITE_NODE_TYPE("PROVENANCES");
+
+	appendStringInfo(str, " %d", node->length);
+	for (int i = 0; i < node->length; i++)
+	{
+		ProvenanceEntry *pentry = &node->entries[i];
+
+		/*
+		 * Putting parentheses around each group makes this look nicer when
+		 * pretty-printed without adding much bulk.
+		 */
+		appendStringInfo(str, " (%d %u %u %d %u)",
+						 (int) pentry->prov_kind,
+						 pentry->prov_object_id,
+						 pentry->prov_role_id,
+						 pentry->prov_parent_index,
+						 pentry->prov_sole_role_id);
+	}
+}
+
 
 /*
  * outNode -

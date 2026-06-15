@@ -21,6 +21,7 @@
 #include "catalog/pg_index.h"
 #include "catalog/pg_publication.h"
 #include "nodes/bitmapset.h"
+#include "nodes/provenance.h"
 #include "partitioning/partdefs.h"
 #include "rewrite/prs2lock.h"
 #include "storage/block.h"
@@ -145,6 +146,7 @@ typedef struct RelationData
 
 	/* data managed by RelationGetPartitionQual: */
 	List	   *rd_partcheck;	/* partition CHECK quals */
+	Provenances *rd_partcheck_provenances;	/* provenances for partition quals */
 	bool		rd_partcheckvalid;	/* true if list has been computed */
 	MemoryContext rd_partcheckcxt;	/* private cxt for rd_partcheck, if any */
 
@@ -210,7 +212,9 @@ typedef struct RelationData
 	struct FmgrInfo *rd_supportinfo;	/* lookup info for support procedures */
 	int16	   *rd_indoption;	/* per-column AM-specific flags */
 	List	   *rd_indexprs;	/* index expression trees, if any */
+	Provenances *rd_indexprs_provenances;	/* associated provenances */
 	List	   *rd_indpred;		/* index predicate tree, if any */
+	Provenances *rd_indpred_provenances;	/* associated provenances */
 	Oid		   *rd_exclops;		/* OIDs of exclusion operators, if any */
 	Oid		   *rd_exclprocs;	/* OIDs of exclusion ops' procs, if any */
 	uint16	   *rd_exclstrats;	/* exclusion ops' strategy numbers, if any */

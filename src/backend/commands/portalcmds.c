@@ -87,7 +87,7 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	 * came straight from the parser, or suitable locks were acquired by
 	 * plancache.c.
 	 */
-	rewritten = QueryRewrite(query);
+	rewritten = QueryRewrite(query, pstate->p_provenances);
 
 	/* SELECT should never rewrite to more or less than one query */
 	if (list_length(rewritten) != 1)
@@ -100,7 +100,7 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 
 	/* Plan the query, applying the specified options */
 	plan = pg_plan_query(query, pstate->p_sourcetext, cstmt->options, params,
-						 NULL);
+						 NULL, pstate->p_provenances);
 
 	/*
 	 * Create a portal and copy the plan and query string into its memory.

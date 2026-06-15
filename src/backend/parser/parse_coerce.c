@@ -911,8 +911,14 @@ build_coercion_expression(Node *node,
 			args = lappend(args, cons);
 		}
 
+		/*
+		 * PROVENANCE-TODO: We need to pass a pstate down through both
+		 * coerce_type and coerce_to_target_type in all cases, so tha the
+		 * caller can compute a provenance index for the pg_cast entry that
+		 * resulted in the call to this function.
+		 */
 		fexpr = makeFuncExpr(funcId, targetTypeId, args,
-							 InvalidOid, InvalidOid, cformat);
+							 InvalidOid, InvalidOid, cformat, 0);
 		fexpr->location = location;
 		return (Node *) fexpr;
 	}

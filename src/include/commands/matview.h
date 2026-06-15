@@ -17,6 +17,7 @@
 #include "catalog/objectaddress.h"
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
+#include "nodes/provenance.h"
 #include "tcop/dest.h"
 #include "utils/relcache.h"
 
@@ -24,10 +25,10 @@
 extern void SetMatViewPopulatedState(Relation relation, bool newstate);
 
 extern ObjectAddress ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
-										QueryCompletion *qc);
+										QueryCompletion *qc, Provenances *provenances);
 extern ObjectAddress RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 										 bool concurrent, const char *queryString,
-										 QueryCompletion *qc);
+										 QueryCompletion *qc, Provenances *provenances);
 
 extern DestReceiver *CreateTransientRelDestReceiver(Oid transientoid);
 

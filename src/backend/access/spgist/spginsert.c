@@ -70,7 +70,8 @@ spgistBuildCallback(Relation index, ItemPointer tid, Datum *values,
  * Build an SP-GiST index.
  */
 IndexBuildResult *
-spgbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+spgbuild(Relation heap, Relation index, IndexInfo *indexInfo,
+		 Provenances *provenances)
 {
 	IndexBuildResult *result;
 	double		reltuples;
@@ -123,7 +124,7 @@ spgbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 									   spgistBuildCallback, &buildstate,
-									   NULL);
+									   NULL, provenances);
 
 	MemoryContextDelete(buildstate.tmpCtx);
 

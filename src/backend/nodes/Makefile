@@ -26,6 +26,7 @@ OBJS = \
 	outfuncs.o \
 	params.o \
 	print.o \
+	provenance.o \
 	queryjumblefuncs.o \
 	read.o \
 	readfuncs.o \
@@ -40,6 +41,7 @@ include $(top_srcdir)/src/backend/common.mk
 # Caution: re-ordering this list risks ABI breakage!
 node_headers = \
 	nodes/nodes.h \
+	nodes/provenance.h \
 	nodes/primnodes.h \
 	nodes/parsenodes.h \
 	nodes/pathnodes.h \

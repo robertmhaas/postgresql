@@ -152,6 +152,8 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	/* caller must ensure the query's snapshot is active */
 	Assert(GetActiveSnapshot() == queryDesc->snapshot);
 
+	Assert(queryDesc->plannedstmt->provenances != NULL);
+
 	/*
 	 * If the transaction is read-only, we need to check if any writes are
 	 * planned to non-temporary tables.  EXPLAIN is considered read-only.
@@ -249,6 +251,14 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	estate->es_top_eflags = eflags;
 	estate->es_instrument = queryDesc->instrument_options;
 	estate->es_jit_flags = queryDesc->plannedstmt->jitFlags;
+
+	/*
+	 * The EState's provenances list starts out identical to the one from the
+	 * PlannedStmt, but we can discover new provenances at runtime. For
+	 * example, we may end up needing to validate new tuples against a
+	 * partition constraint that is not present in the PlannedStmt.
+	 */
+	estate->es_provenances = copyObject(queryDesc->plannedstmt->provenances);
 
 	/*
 	 * Set up query-level instrumentation if extensions have requested it via
@@ -1834,13 +1844,20 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 		for (int i = 0; i < ncheck; i++)
 		{
 			Expr	   *checkconstr;
+			ProvenanceIndex pidx;
 
 			/* Skip not enforced constraint */
 			if (!check[i].ccenforced)
 				continue;
 
-			checkconstr = stringToNode(check[i].ccbin);
-			checkconstr = (Expr *) expand_generated_columns_in_expr((Node *) checkconstr, rel, 1);
+			pidx = ProvenanceForConstraint(estate->es_provenances,
+										   check[i].ccoid,
+										   rel->rd_rel->relowner, 0);
+			checkconstr = stringToNode(check[i].ccbin, pidx);
+			checkconstr = (Expr *)
+				expand_generated_columns_in_expr((Node *) checkconstr,
+												 rel, 1,
+												 estate->es_provenances);
 			resultRelInfo->ri_CheckConstraintExprs[i] =
 				ExecPrepareExpr(checkconstr, estate);
 		}
@@ -1902,7 +1919,8 @@ ExecPartitionCheck(ResultRelInfo *resultRelInfo, TupleTableSlot *slot,
 		 * query-lifespan context.
 		 */
 		MemoryContext oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
-		List	   *qual = RelationGetPartitionQual(resultRelInfo->ri_RelationDesc);
+		List	   *qual = RelationGetPartitionQual(resultRelInfo->ri_RelationDesc,
+													estate->es_provenances);
 
 		resultRelInfo->ri_PartitionCheckExpr = ExecPrepareCheck(qual, estate);
 		MemoryContextSwitchTo(oldcxt);
@@ -2145,7 +2163,9 @@ ExecRelGenVirtualNotNull(ResultRelInfo *resultRelInfo, TupleTableSlot *slot,
 
 			/* "generated_expression IS NOT NULL" check. */
 			nnulltest = makeNode(NullTest);
-			nnulltest->arg = (Expr *) build_generation_expression(rel, attnum);
+			nnulltest->arg = (Expr *)
+				build_generation_expression(rel, attnum,
+											estate->es_provenances);
 			nnulltest->nulltesttype = IS_NOT_NULL;
 			nnulltest->argisrow = false;
 			nnulltest->location = -1;

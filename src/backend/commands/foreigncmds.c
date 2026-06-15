@@ -31,6 +31,8 @@
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "parser/parse_func.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
@@ -1594,6 +1596,7 @@ ImportForeignSchema(ImportForeignSchemaStmt *stmt)
 	FdwRoutine *fdw_routine;
 	AclResult	aclresult;
 	List	   *cmd_list;
+	Provenances *provenances;
 	ListCell   *lc;
 
 	/* Check that the foreign server exists and that we have USAGE on it */
@@ -1621,6 +1624,11 @@ ImportForeignSchema(ImportForeignSchemaStmt *stmt)
 
 	/* Call FDW to get a list of commands */
 	cmd_list = fdw_routine->ImportForeignSchema(stmt, server->serverid);
+
+	/* Blame the foreign server for the commands it generates */
+	provenances =
+		InitProvenancesForCache(PROVENANCE_FOREIGN_SERVER,
+								server->serverid, server->owner);
 
 	/* Parse and execute each command */
 	foreach(lc, cmd_list)
@@ -1683,6 +1691,7 @@ ImportForeignSchema(ImportForeignSchemaStmt *stmt)
 			pstmt->utilityStmt = (Node *) cstmt;
 			pstmt->stmt_location = rs->stmt_location;
 			pstmt->stmt_len = rs->stmt_len;
+			pstmt->provenances = provenances;
 			pstmt->planOrigin = PLAN_STMT_INTERNAL;
 
 			/* Execute statement */

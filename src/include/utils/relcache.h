@@ -57,8 +57,10 @@ extern List *RelationGetIndexList(Relation relation);
 extern List *RelationGetStatExtList(Relation relation);
 extern Oid	RelationGetPrimaryKeyIndex(Relation relation, bool deferrable_ok);
 extern Oid	RelationGetReplicaIndex(Relation relation);
+extern bool RelationHasIndexExpressions(Relation relation);
 extern List *RelationGetIndexExpressions(Relation relation);
 extern List *RelationGetDummyIndexExpressions(Relation relation);
+extern bool RelationHasIndexPredicate(Relation relation);
 extern List *RelationGetIndexPredicate(Relation relation);
 extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
 

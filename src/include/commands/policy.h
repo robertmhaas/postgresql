@@ -17,6 +17,7 @@
 
 #include "catalog/objectaddress.h"
 #include "nodes/parsenodes.h"
+#include "parser/parse_node.h"
 #include "utils/relcache.h"
 
 extern void RelationBuildRowSecurity(Relation relation);
@@ -25,8 +26,8 @@ extern void RemovePolicyById(Oid policy_id);
 
 extern bool RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id);
 
-extern ObjectAddress CreatePolicy(CreatePolicyStmt *stmt);
-extern ObjectAddress AlterPolicy(AlterPolicyStmt *stmt);
+extern ObjectAddress CreatePolicy(ParseState *pstate, CreatePolicyStmt *stmt);
+extern ObjectAddress AlterPolicy(ParseState *pstate, AlterPolicyStmt *stmt);
 
 extern Oid	get_relation_policy_oid(Oid relid, const char *policy_name,
 									bool missing_ok);

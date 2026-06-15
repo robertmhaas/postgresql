@@ -843,6 +843,7 @@ test_inline_in_from_support_func(PG_FUNCTION_ARGS)
 		List	   *raw_parsetree_list;
 		List	   *querytree_list;
 		Query	   *querytree;
+		Provenances *provenances;
 
 		if (list_length(expr->args) != 3)
 		{
@@ -915,10 +916,16 @@ test_inline_in_from_support_func(PG_FUNCTION_ARGS)
 		}
 
 		/* Analyze the parse tree as if it were a SQL-language body. */
-		querytree_list = pg_analyze_and_rewrite_withcb(linitial(raw_parsetree_list),
-													   sql.data,
-													   (ParserSetupHook) sql_fn_parser_setup,
-													   pinfo, NULL);
+		provenances =
+			InitProvenancesForCache(PROVENANCE_FUNCTION,
+									fcinfo->flinfo->fn_oid,
+									fcinfo->flinfo->fn_owner);
+		querytree_list =
+			pg_analyze_and_rewrite_withcb(linitial(raw_parsetree_list),
+										  sql.data,
+										  (ParserSetupHook) sql_fn_parser_setup,
+										  pinfo, NULL,
+										  provenances);
 		if (list_length(querytree_list) != 1)
 		{
 			ereport(WARNING, (errmsg("test_inline_in_from_support_func rewrote to more than one node")));

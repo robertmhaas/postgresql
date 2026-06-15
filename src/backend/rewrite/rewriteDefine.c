@@ -187,14 +187,14 @@ InsertRule(const char *rulname,
  *		Execute a CREATE RULE command.
  */
 ObjectAddress
-DefineRule(RuleStmt *stmt, const char *queryString)
+DefineRule(ParseState *pstate, RuleStmt *stmt)
 {
 	List	   *actions;
 	Node	   *whereClause;
 	Oid			relId;
 
 	/* Parse analysis. */
-	transformRuleStmt(stmt, queryString, &actions, &whereClause);
+	transformRuleStmt(pstate, stmt, &actions, &whereClause);
 
 	/*
 	 * Find and lock the relation.  Lock level should match

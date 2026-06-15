@@ -1102,6 +1102,7 @@ execute_sql_string(const char *sql, const char *filename)
 	List	   *raw_parsetree_list;
 	DestReceiver *dest;
 	ListCell   *lc1;
+	Provenances *provenances;
 
 	/*
 	 * Setup error traceback support for ereport().
@@ -1154,12 +1155,21 @@ execute_sql_string(const char *sql, const char *filename)
 		/* Be sure parser can see any DDL done so far */
 		CommandCounterIncrement();
 
-		stmt_list = pg_analyze_and_rewrite_fixedparams(parsetree,
-													   sql,
-													   NULL,
-													   0,
-													   NULL);
-		stmt_list = pg_plan_queries(stmt_list, sql, CURSOR_OPT_PARALLEL_OK, NULL);
+		/* extension script source is ultimately trusted */
+		provenances =
+			InitProvenancesForCache(PROVENANCE_FILESYSTEM,
+									InvalidOid,
+									BOOTSTRAP_SUPERUSERID);
+		stmt_list =
+			pg_analyze_and_rewrite_fixedparams(parsetree,
+											   sql,
+											   NULL,
+											   0,
+											   NULL,
+											   provenances);
+		stmt_list = pg_plan_queries(stmt_list, sql,
+									CURSOR_OPT_PARALLEL_OK,
+									NULL, provenances);
 
 		foreach(lc2, stmt_list)
 		{

@@ -16,6 +16,7 @@
 
 #include "nodes/params.h"
 #include "nodes/plannodes.h"
+#include "nodes/provenance.h"
 #include "storage/procsignal.h"
 #include "utils/guc.h"
 #include "utils/queryenvironment.h"
@@ -47,28 +48,33 @@ extern PGDLLIMPORT int log_statement;
 extern PGDLLIMPORT int restrict_nonsystem_relation_kind;
 
 extern List *pg_parse_query(const char *query_string);
-extern List *pg_rewrite_query(Query *query);
+extern List *pg_rewrite_query(Query *query, Provenances *provenances);
 extern List *pg_analyze_and_rewrite_fixedparams(RawStmt *parsetree,
 												const char *query_string,
 												const Oid *paramTypes, int numParams,
-												QueryEnvironment *queryEnv);
+												QueryEnvironment *queryEnv,
+												Provenances *provenances);
 extern List *pg_analyze_and_rewrite_varparams(RawStmt *parsetree,
 											  const char *query_string,
 											  Oid **paramTypes,
 											  int *numParams,
-											  QueryEnvironment *queryEnv);
+											  QueryEnvironment *queryEnv,
+											  Provenances *provenances);
 extern List *pg_analyze_and_rewrite_withcb(RawStmt *parsetree,
 										   const char *query_string,
 										   ParserSetupHook parserSetup,
 										   void *parserSetupArg,
-										   QueryEnvironment *queryEnv);
+										   QueryEnvironment *queryEnv,
+										   Provenances *provenances);
 extern PlannedStmt *pg_plan_query(Query *querytree, const char *query_string,
 								  int cursorOptions,
 								  ParamListInfo boundParams,
-								  ExplainState *es);
+								  ExplainState *es,
+								  Provenances *provenances);
 extern List *pg_plan_queries(List *querytrees, const char *query_string,
 							 int cursorOptions,
-							 ParamListInfo boundParams);
+							 ParamListInfo boundParams,
+							 Provenances *provenances);
 
 extern void die(SIGNAL_ARGS);
 pg_noreturn extern void quickdie(SIGNAL_ARGS);

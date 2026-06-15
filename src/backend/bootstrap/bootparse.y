@@ -30,6 +30,8 @@
 #include "commands/defrem.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
+#include "parser/parse_node.h"
 #include "utils/memutils.h"
 
 #include "bootparse.h"
@@ -275,6 +277,7 @@ Boot_DeclareIndexStmt:
 				{
 					IndexStmt  *stmt = makeNode(IndexStmt);
 					Oid			relationId;
+					ParseState *pstate;
 
 					elog(DEBUG4, "creating index \"%s\"", $3);
 
@@ -288,6 +291,7 @@ Boot_DeclareIndexStmt:
 					stmt->indexIncludingParams = NIL;
 					stmt->options = NIL;
 					stmt->whereClause = NULL;
+					stmt->whereProvenances = NULL;
 					stmt->excludeOpNames = NIL;
 					stmt->idxcomment = NULL;
 					stmt->indexOid = InvalidOid;
@@ -308,7 +312,9 @@ Boot_DeclareIndexStmt:
 					relationId = RangeVarGetRelid(stmt->relation, NoLock,
 												  false);
 
-					DefineIndex(NULL,
+					pstate = make_parsestate(NULL);
+					pstate->p_provenances = InitProvenancesForBootstrap();
+					DefineIndex(pstate,
 								relationId,
 								stmt,
 								$4,
@@ -329,6 +335,7 @@ Boot_DeclareUniqueIndexStmt:
 				{
 					IndexStmt  *stmt = makeNode(IndexStmt);
 					Oid			relationId;
+					ParseState *pstate;
 
 					elog(DEBUG4, "creating unique index \"%s\"", $4);
 
@@ -342,6 +349,7 @@ Boot_DeclareUniqueIndexStmt:
 					stmt->indexIncludingParams = NIL;
 					stmt->options = NIL;
 					stmt->whereClause = NULL;
+					stmt->whereProvenances = NULL;
 					stmt->excludeOpNames = NIL;
 					stmt->idxcomment = NULL;
 					stmt->indexOid = InvalidOid;
@@ -362,7 +370,9 @@ Boot_DeclareUniqueIndexStmt:
 					relationId = RangeVarGetRelid(stmt->relation, NoLock,
 												  false);
 
-					DefineIndex(NULL,
+					pstate = make_parsestate(NULL);
+					pstate->p_provenances = InitProvenancesForBootstrap();
+					DefineIndex(pstate,
 								relationId,
 								stmt,
 								$5,

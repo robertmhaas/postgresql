@@ -17,6 +17,7 @@
 
 #include "access/detoast.h"
 #include "access/htup_details.h"
+#include "catalog/pg_authid_d.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -175,6 +176,7 @@ fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
 		finfo->fn_retset = fbp->retset;
 		finfo->fn_stats = TRACK_FUNC_ALL;	/* ie, never track */
 		finfo->fn_addr = fbp->func;
+		finfo->fn_owner = BOOTSTRAP_SUPERUSERID;
 		finfo->fn_oid = functionId;
 		return;
 	}
@@ -188,6 +190,7 @@ fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
 	finfo->fn_nargs = procedureStruct->pronargs;
 	finfo->fn_strict = procedureStruct->proisstrict;
 	finfo->fn_retset = procedureStruct->proretset;
+	finfo->fn_owner = procedureStruct->proowner;
 
 	/*
 	 * If it has prosecdef set, non-null proconfig, or if a plugin wants to

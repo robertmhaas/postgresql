@@ -110,6 +110,7 @@ typedef struct plperl_proc_desc
 	SV		   *reference;		/* CODE reference for Perl sub */
 	plperl_interp_desc *interp; /* interpreter it's created in */
 	bool		fn_readonly;	/* is function readonly (not volatile)? */
+	Provenances *provenances;
 	Oid			lang_oid;
 	List	   *trftypes;
 	bool		lanpltrusted;	/* is it plperl, rather than plperlu? */
@@ -1933,6 +1934,7 @@ plperl_inline_handler(PG_FUNCTION_ARGS)
 
 	desc.proname = "inline_code_block";
 	desc.fn_readonly = false;
+	desc.provenances = codeblock->provenances;
 
 	desc.lang_oid = codeblock->langOid;
 	desc.trftypes = NIL;
@@ -2810,6 +2812,9 @@ compile_plperl_function(Oid fn_oid, bool is_trigger, bool is_event_trigger)
 		prodesc->fn_refcount = 0;
 		prodesc->fn_xmin = HeapTupleHeaderGetRawXmin(procTup->t_data);
 		prodesc->fn_tid = procTup->t_self;
+		prodesc->provenances =
+			InitProvenancesForCache(PROVENANCE_FUNCTION,
+									fn_oid, procStruct->proowner);
 		prodesc->nargs = procStruct->pronargs;
 		prodesc->arg_out_func = (FmgrInfo *) palloc0(prodesc->nargs * sizeof(FmgrInfo));
 		prodesc->arg_is_rowtype = (bool *) palloc0(prodesc->nargs * sizeof(bool));
@@ -3157,11 +3162,14 @@ plperl_spi_exec(char *query, int limit)
 	PG_TRY();
 	{
 		int			spi_rv;
+		Provenances *provenances;
 
+		provenances = current_call_data->prodesc->provenances;
 		pg_verifymbstr(query, strlen(query), false);
 
-		spi_rv = SPI_execute(query, current_call_data->prodesc->fn_readonly,
-							 limit);
+		spi_rv = SPI_execute(query,
+							 current_call_data->prodesc->fn_readonly,
+							 limit, provenances);
 		ret_hv = plperl_spi_execute_fetch_result(SPI_tuptable, SPI_processed,
 												 spi_rv);
 
@@ -3429,12 +3437,15 @@ plperl_spi_query(char *query)
 	{
 		SPIPlanPtr	plan;
 		Portal		portal;
+		Provenances *provenances;
+
+		provenances = current_call_data->prodesc->provenances;
 
 		/* Make sure the query is validly encoded */
 		pg_verifymbstr(query, strlen(query), false);
 
 		/* Create a cursor for the query */
-		plan = SPI_prepare(query, 0, NULL);
+		plan = SPI_prepare(query, 0, NULL, provenances);
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare() failed:%s",
 				 SPI_result_code_string(SPI_result));
@@ -3590,7 +3601,11 @@ plperl_spi_prepare(char *query, int argc, SV **argv)
 
 	PG_TRY();
 	{
+		Provenances *provenances;
+
 		CHECK_FOR_INTERRUPTS();
+
+		provenances = current_call_data->prodesc->provenances;
 
 		/************************************************************
 		 * Allocate the new querydesc structure
@@ -3650,7 +3665,8 @@ plperl_spi_prepare(char *query, int argc, SV **argv)
 		/************************************************************
 		 * Prepare the plan and check for errors
 		 ************************************************************/
-		plan = SPI_prepare(query, argc, qdesc->argtypes);
+		plan = SPI_prepare(query, argc, qdesc->argtypes,
+						   provenances);
 
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare() failed:%s",
@@ -3806,7 +3822,8 @@ plperl_spi_exec_prepared(char *query, HV *attr, int argc, SV **argv)
 		 * go
 		 ************************************************************/
 		spi_rv = SPI_execute_plan(qdesc->plan, argvalues, nulls,
-								  current_call_data->prodesc->fn_readonly, limit);
+								  current_call_data->prodesc->fn_readonly,
+								  limit);
 		ret_hv = plperl_spi_execute_fetch_result(SPI_tuptable, SPI_processed,
 												 spi_rv);
 		if (argc > 0)

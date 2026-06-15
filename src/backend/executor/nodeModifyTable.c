@@ -497,7 +497,8 @@ ExecInitGenerated(ResultRelInfo *resultRelInfo,
 			Expr	   *expr;
 
 			/* Fetch the GENERATED AS expression tree */
-			expr = (Expr *) build_column_default(rel, i + 1);
+			expr = (Expr *) build_column_default(rel, i + 1,
+												 estate->es_provenances);
 			if (expr == NULL)
 				elog(ERROR, "no generation expression found for column number %d of table \"%s\"",
 					 i + 1, RelationGetRelationName(rel));

@@ -31,6 +31,7 @@
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
+#include "nodes/provenance.h"
 #include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/lmgr.h"
@@ -60,10 +61,14 @@ static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void transientrel_shutdown(DestReceiver *self);
 static void transientrel_destroy(DestReceiver *self);
 static uint64 refresh_matview_datafill(DestReceiver *dest, Query *query,
-									   const char *queryString, bool is_create);
-static void refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
-								   int save_sec_context);
-static void refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersistence);
+									   const char *queryString, bool is_create,
+									   Provenances *provenances);
+static void refresh_by_match_merge(Oid matviewOid, Oid tempOid,
+								   Oid relowner, int save_sec_context,
+								   Provenances *provenances);
+static void refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap,
+								 char relpersistence,
+								 Provenances *provenances);
 static bool is_usable_unique_index(Relation indexRel);
 static void OpenMatViewIncrementalMaintenance(void);
 static void CloseMatViewIncrementalMaintenance(void);
@@ -118,7 +123,7 @@ SetMatViewPopulatedState(Relation relation, bool newstate)
  */
 ObjectAddress
 ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
-				   QueryCompletion *qc)
+				   QueryCompletion *qc, Provenances *provenances)
 {
 	Oid			matviewOid;
 	LOCKMODE	lockmode;
@@ -135,7 +140,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 										  NULL);
 
 	return RefreshMatViewByOid(matviewOid, false, stmt->skipData,
-							   stmt->concurrent, queryString, qc);
+							   stmt->concurrent, queryString, qc,
+							   provenances);
 }
 
 /*
@@ -163,7 +169,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 ObjectAddress
 RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 					bool concurrent, const char *queryString,
-					QueryCompletion *qc)
+					QueryCompletion *qc, Provenances *provenances)
 {
 	Relation	matviewRel;
 	RewriteRule *rule;
@@ -181,6 +187,9 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 
 	matviewRel = table_open(matviewOid, NoLock);
 	relowner = matviewRel->rd_rel->relowner;
+
+	/* Separate parse-time provenances from execution-time provenances. */
+	provenances = InitProvenances(provenances, 0);
 
 	/*
 	 * Switch to the owner's userid, so that any functions are run as that
@@ -317,17 +326,28 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 	 */
 	OIDNewHeap = make_new_heap(matviewOid, tableSpace,
 							   matviewRel->rd_rel->relam,
-							   relpersistence, ExclusiveLock);
+							   relpersistence, ExclusiveLock,
+							   provenances);
 	Assert(CheckRelationOidLockedByMe(OIDNewHeap, AccessExclusiveLock, false));
 
 	/* Generate the data, if wanted. */
 	if (!skipData)
 	{
 		DestReceiver *dest;
+		ProvenanceIndex poffset;
+
+		/*
+		 * Copy the relcache's version of the query and fix provenance
+		 * indexes.
+		 */
+		poffset = AppendProvenances(provenances, rule->provenances, 0);
+		dataQuery = copyObject(dataQuery);
+		OffsetProvenances((Node *) dataQuery, poffset);
 
 		dest = CreateTransientRelDestReceiver(OIDNewHeap);
 		processed = refresh_matview_datafill(dest, dataQuery, queryString,
-											 is_create);
+											 is_create,
+											 provenances);
 	}
 
 	/* Make the matview match the newly generated data. */
@@ -338,7 +358,8 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 		PG_TRY();
 		{
 			refresh_by_match_merge(matviewOid, OIDNewHeap, relowner,
-								   save_sec_context);
+								   save_sec_context,
+								   provenances);
 		}
 		PG_CATCH();
 		{
@@ -350,7 +371,8 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 	}
 	else
 	{
-		refresh_by_heap_swap(matviewOid, OIDNewHeap, relpersistence);
+		refresh_by_heap_swap(matviewOid, OIDNewHeap, relpersistence,
+							 provenances);
 
 		/*
 		 * Inform cumulative stats system about our activity: basically, we
@@ -398,22 +420,24 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
  * Execute the given query, sending result rows to "dest" (which will
  * insert them into the target matview).
  *
+ * NB: The provided query will be mutated. Caller should pass a copy if
+ * the original needs to be preserved.
+ *
  * Returns number of rows inserted.
  */
 static uint64
 refresh_matview_datafill(DestReceiver *dest, Query *query,
-						 const char *queryString, bool is_create)
+						 const char *queryString, bool is_create,
+						 Provenances *provenances)
 {
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
-	Query	   *copied_query;
 	uint64		processed;
 
-	/* Lock and rewrite, using a copy to preserve the original query. */
-	copied_query = copyObject(query);
-	AcquireRewriteLocks(copied_query, true, false);
-	rewritten = QueryRewrite(copied_query);
+	/* Lock and rewrite. */
+	AcquireRewriteLocks(query, true, false);
+	rewritten = QueryRewrite(query, provenances);
 
 	/* SELECT should never rewrite to more or less than one SELECT query */
 	if (list_length(rewritten) != 1)
@@ -425,7 +449,8 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 	CHECK_FOR_INTERRUPTS();
 
 	/* Plan the query which will generate data for the refresh. */
-	plan = pg_plan_query(query, queryString, CURSOR_OPT_PARALLEL_OK, NULL, NULL);
+	plan = pg_plan_query(query, queryString, CURSOR_OPT_PARALLEL_OK, NULL,
+						 NULL, provenances);
 
 	/*
 	 * Use a snapshot with an updated command ID to ensure this query sees
@@ -589,7 +614,8 @@ transientrel_destroy(DestReceiver *self)
  */
 static void
 refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
-					   int save_sec_context)
+					   int save_sec_context,
+					   Provenances *provenances)
 {
 	StringInfoData querybuf;
 	Relation	matviewRel;
@@ -631,7 +657,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 
 	/* Analyze the temp table with the new contents. */
 	appendStringInfo(&querybuf, "ANALYZE %s", tempname);
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_UTILITY)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/*
@@ -654,7 +680,8 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					 "AND newdata2.ctid OPERATOR(pg_catalog.<>) "
 					 "newdata.ctid)",
 					 tempname, tempname, tempname);
-	if (SPI_execute(querybuf.data, false, 1) != SPI_OK_SELECT)
+	if (SPI_execute(querybuf.data, false, 1,
+					provenances) != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	if (SPI_processed > 0)
 	{
@@ -687,7 +714,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	appendStringInfo(&querybuf,
 					 "CREATE TEMP TABLE %s (tid pg_catalog.tid)",
 					 diffname);
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_UTILITY)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
@@ -695,7 +722,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	appendStringInfo(&querybuf,
 					 "ALTER TABLE %s ADD COLUMN newdata %s",
 					 diffname, tempname);
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_UTILITY)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/* Start building the query for populating the diff table. */
@@ -832,7 +859,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 						   "ORDER BY tid");
 
 	/* Populate the temporary "diff" table. */
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/*
@@ -843,7 +870,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	/* Analyze the diff table. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf, "ANALYZE %s", diffname);
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_UTILITY)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	OpenMatViewIncrementalMaintenance();
@@ -856,7 +883,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					 "WHERE diff.tid IS NOT NULL "
 					 "AND diff.newdata IS NULL)",
 					 matviewname, diffname);
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_DELETE)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/* Inserts go last. */
@@ -865,7 +892,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 					 "INSERT INTO %s SELECT (diff.newdata).* "
 					 "FROM %s diff WHERE tid IS NULL",
 					 matviewname, diffname);
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/* We're done maintaining the materialized view. */
@@ -876,7 +903,7 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	/* Clean up temp tables. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf, "DROP TABLE %s, %s", diffname, tempname);
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+	if (SPI_exec(querybuf.data, 0, provenances) != SPI_OK_UTILITY)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	/* Close SPI context. */
@@ -890,11 +917,13 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
  * swapping is handled by the called function, so it is not needed here.
  */
 static void
-refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersistence)
+refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersistence,
+					 Provenances *provenances)
 {
 	finish_heap_swap(matviewOid, OIDNewHeap, false, false, true, true,
 					 true,		/* reindex */
-					 RecentXmin, ReadNextMultiXactId(), relpersistence);
+					 RecentXmin, ReadNextMultiXactId(), relpersistence,
+					 provenances);
 }
 
 /*
@@ -908,6 +937,12 @@ is_usable_unique_index(Relation indexRel)
 	/*
 	 * Must be unique, valid, immediate, non-partial, and be defined over
 	 * plain user columns (not expressions).
+	 *
+	 * One surprising wrinkle is that we consider a partial index to be usable
+	 * here if the WHERE-clause reduces to constant true, because we call
+	 * RelationGetIndexPredicate rather than RelationHasIndexPredicate.
+	 * Whether that's a good idea is possibly questionable, but as of this
+	 * writing we have a regression test covering that case.
 	 */
 	if (indexStruct->indisunique &&
 		indexStruct->indimmediate &&

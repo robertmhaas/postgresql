@@ -26,6 +26,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/analyze.h"
 #include "parser/parse_collate.h"
@@ -90,36 +91,71 @@ struct path_element
 	List	   *dest_quals;
 };
 
-static Node *replace_property_refs(Oid propgraphid, Node *node, const List *mappings);
-static List *build_edge_vertex_link_quals(HeapTuple edgetup, int edgerti, int refrti, Oid refid, AttrNumber catalog_key_attnum, AttrNumber catalog_ref_attnum, AttrNumber catalog_eqop_attnum);
-static List *generate_queries_for_path_pattern(RangeTblEntry *rte, List *path_pattern);
-static Query *generate_query_for_graph_path(RangeTblEntry *rte, List *graph_path);
+static Node *replace_property_refs(Oid propgraphid, Node *node,
+								   const List *mappings,
+								   Provenances *provenances,
+								   ProvenanceIndex pidx);
+static List *build_edge_vertex_link_quals(HeapTuple edgetup,
+										  int edgerti,
+										  int refrti,
+										  Oid refid,
+										  AttrNumber catalog_key_attnum,
+										  AttrNumber catalog_ref_attnum,
+										  AttrNumber catalog_eqop_attnum,
+										  Provenances *provenances,
+										  ProvenanceIndex pidx);
+static List *generate_queries_for_path_pattern(RangeTblEntry *rte,
+											   List *path_pattern,
+											   Provenances *provenances,
+											   ProvenanceIndex pidx);
+static Query *generate_query_for_graph_path(RangeTblEntry *rte,
+											List *graph_path,
+											Provenances *provenances,
+											ProvenanceIndex pidx);
 static Node *generate_setop_from_pathqueries(List *pathqueries, List **rtable, List **targetlist);
-static List *generate_queries_for_path_pattern_recurse(RangeTblEntry *rte, List *pathqueries, List *cur_path, List *path_elem_lists, int elempos);
+static List *generate_queries_for_path_pattern_recurse(RangeTblEntry *rte,
+													   List *pathqueries,
+													   List *cur_path,
+													   List *path_elem_lists,
+													   int elempos,
+													   Provenances *provenances,
+													   ProvenanceIndex pidx);
 static Query *generate_query_for_empty_path_pattern(RangeTblEntry *rte);
 static Query *generate_union_from_pathqueries(List **pathqueries);
-static List *get_path_elements_for_path_factor(Oid propgraphid, struct path_factor *pf);
+static List *get_path_elements_for_path_factor(Oid propgraphid,
+											   struct path_factor *pf,
+											   Provenances *provenances,
+											   ProvenanceIndex pidx);
 static bool is_property_associated_with_label(Oid labeloid, Oid propoid);
-static Node *get_element_property_expr(Oid elemoid, Oid propoid, int rtindex);
+static Node *get_element_property_expr(Oid elemoid, Oid propoid, int rtindex,
+									   Provenances *provenances,
+									   ProvenanceIndex pidx);
 
 /*
  * Convert GRAPH_TABLE clause into a subquery using relational
  * operators.
  */
 Query *
-rewriteGraphTable(Query *parsetree, int rt_index)
+rewriteGraphTable(Query *parsetree, int rt_index,
+				  Provenances *provenances)
 {
 	RangeTblEntry *rte;
 	Query	   *graph_table_query;
 	List	   *path_pattern;
 	List	   *pathqueries = NIL;
+	ProvenanceIndex pidx;
 
 	rte = rt_fetch(rt_index, parsetree->rtable);
+
+	/* Track the property graph as a provenance source. */
+	pidx = ProvenanceForPropertyGraph(provenances, rte->relid,
+									  get_rel_owner(rte->relid), 0);
 
 	Assert(list_length(rte->graph_pattern->path_pattern_list) == 1);
 
 	path_pattern = linitial(rte->graph_pattern->path_pattern_list);
-	pathqueries = generate_queries_for_path_pattern(rte, path_pattern);
+	pathqueries = generate_queries_for_path_pattern(rte, path_pattern,
+													provenances, pidx);
 	graph_table_query = generate_union_from_pathqueries(&pathqueries);
 
 	AcquireRewriteLocks(graph_table_query, true, false);
@@ -172,7 +208,9 @@ rewriteGraphTable(Query *parsetree, int rt_index)
  * the GRAPH_TABLE clause represented by given 'rte'.
  */
 static List *
-generate_queries_for_path_pattern(RangeTblEntry *rte, List *path_pattern)
+generate_queries_for_path_pattern(RangeTblEntry *rte, List *path_pattern,
+								  Provenances *provenances,
+								  ProvenanceIndex pidx)
 {
 	List	   *pathqueries = NIL;
 	List	   *path_elem_lists = NIL;
@@ -340,11 +378,20 @@ generate_queries_for_path_pattern(RangeTblEntry *rte, List *path_pattern)
 	 * edge links are setup correctly.
 	 */
 	foreach_ptr(struct path_factor, pf, path_factors)
-		path_elem_lists = lappend(path_elem_lists,
-								  get_path_elements_for_path_factor(rte->relid, pf));
+	{
+		List	   *path_elem;
+
+		path_elem = get_path_elements_for_path_factor(rte->relid, pf,
+													  provenances, pidx);
+		path_elem_lists = lappend(path_elem_lists, path_elem);
+	}
 
 	pathqueries = generate_queries_for_path_pattern_recurse(rte, pathqueries,
-															NIL, path_elem_lists, 0);
+															NIL,
+															path_elem_lists,
+															0,
+															provenances,
+															pidx);
 	if (!pathqueries)
 		pathqueries = list_make1(generate_query_for_empty_path_pattern(rte));
 
@@ -358,7 +405,13 @@ generate_queries_for_path_pattern(RangeTblEntry *rte, List *path_pattern)
  * built.
  */
 static List *
-generate_queries_for_path_pattern_recurse(RangeTblEntry *rte, List *pathqueries, List *cur_path, List *path_elem_lists, int elempos)
+generate_queries_for_path_pattern_recurse(RangeTblEntry *rte,
+										  List *pathqueries,
+										  List *cur_path,
+										  List *path_elem_lists,
+										  int elempos,
+										  Provenances *provenances,
+										  ProvenanceIndex pidx)
 {
 	List	   *path_elems = list_nth_node(List, path_elem_lists, elempos);
 
@@ -376,7 +429,10 @@ generate_queries_for_path_pattern_recurse(RangeTblEntry *rte, List *pathqueries,
 		 */
 		if (list_length(path_elem_lists) == list_length(cur_path))
 		{
-			Query	   *pathquery = generate_query_for_graph_path(rte, cur_path);
+			Query	   *pathquery;
+
+			pathquery = generate_query_for_graph_path(rte, cur_path,
+													  provenances, pidx);
 
 			Assert(elempos == list_length(path_elem_lists) - 1);
 			if (pathquery)
@@ -386,7 +442,10 @@ generate_queries_for_path_pattern_recurse(RangeTblEntry *rte, List *pathqueries,
 			pathqueries = generate_queries_for_path_pattern_recurse(rte, pathqueries,
 																	cur_path,
 																	path_elem_lists,
-																	elempos + 1);
+																	elempos + 1,
+																	provenances,
+																	pidx);
+
 		/* Make way for the next element at the same position. */
 		cur_path = list_delete_last(cur_path);
 	}
@@ -416,7 +475,8 @@ generate_queries_for_path_pattern_recurse(RangeTblEntry *rte, List *pathqueries,
  * More details in the prologue of generate_queries_for_path_pattern().
  */
 static Query *
-generate_query_for_graph_path(RangeTblEntry *rte, List *graph_path)
+generate_query_for_graph_path(RangeTblEntry *rte, List *graph_path,
+							  Provenances *provenances, ProvenanceIndex pidx)
 {
 	Query	   *path_query = makeNode(Query);
 	List	   *fromlist = NIL;
@@ -530,7 +590,8 @@ generate_query_for_graph_path(RangeTblEntry *rte, List *graph_path)
 		{
 			Node	   *tr;
 
-			tr = replace_property_refs(rte->relid, pf->whereClause, list_make1(pe));
+			tr = replace_property_refs(rte->relid, pf->whereClause,
+									   list_make1(pe), provenances, pidx);
 
 			qual_exprs = lappend(qual_exprs, tr);
 		}
@@ -540,7 +601,9 @@ generate_query_for_graph_path(RangeTblEntry *rte, List *graph_path)
 	{
 		Node	   *path_quals = replace_property_refs(rte->relid,
 													   (Node *) rte->graph_pattern->whereClause,
-													   graph_path);
+													   graph_path,
+													   provenances,
+													   pidx);
 
 		qual_exprs = lappend(qual_exprs, path_quals);
 	}
@@ -552,7 +615,9 @@ generate_query_for_graph_path(RangeTblEntry *rte, List *graph_path)
 	path_query->targetList = castNode(List,
 									  replace_property_refs(rte->relid,
 															(Node *) rte->graph_table_columns,
-															graph_path));
+															graph_path,
+															provenances,
+															pidx));
 
 	/*
 	 * Mark the columns being accessed in the path query as requiring SELECT
@@ -763,7 +828,8 @@ generate_setop_from_pathqueries(List *pathqueries, List **rtable, List **targetl
  * function returns NULL.
  */
 static struct path_element *
-create_pe_for_element(struct path_factor *pf, Oid elemoid)
+create_pe_for_element(struct path_factor *pf, Oid elemoid,
+					  Provenances *provenances, ProvenanceIndex pidx)
 {
 	HeapTuple	eletup = SearchSysCache1(PROPGRAPHELOID, ObjectIdGetDatum(elemoid));
 	Form_pg_propgraph_element pgeform;
@@ -808,12 +874,14 @@ create_pe_for_element(struct path_factor *pf, Oid elemoid)
 													 pe->srcvertexid,
 													 Anum_pg_propgraph_element_pgesrckey,
 													 Anum_pg_propgraph_element_pgesrcref,
-													 Anum_pg_propgraph_element_pgesrceqop);
+													 Anum_pg_propgraph_element_pgesrceqop,
+													 provenances, pidx);
 		pe->dest_quals = build_edge_vertex_link_quals(eletup, pf->factorpos + 1, pf->dest_pf->factorpos + 1,
 													  pe->destvertexid,
 													  Anum_pg_propgraph_element_pgedestkey,
 													  Anum_pg_propgraph_element_pgedestref,
-													  Anum_pg_propgraph_element_pgedesteqop);
+													  Anum_pg_propgraph_element_pgedesteqop,
+													  provenances, pidx);
 	}
 
 	ReleaseSysCache(eletup);
@@ -904,7 +972,9 @@ get_labels_for_expr(Oid propgraphid, Node *labelexpr)
  * to simplify the code.
  */
 static List *
-get_path_elements_for_path_factor(Oid propgraphid, struct path_factor *pf)
+get_path_elements_for_path_factor(Oid propgraphid, struct path_factor *pf,
+								  Provenances *provenances,
+								  ProvenanceIndex pidx)
 {
 	List	   *label_oids = get_labels_for_expr(propgraphid, pf->labelexpr);
 	List	   *elem_oids_seen = NIL;
@@ -941,11 +1011,13 @@ get_path_elements_for_path_factor(Oid propgraphid, struct path_factor *pf)
 
 			if (!list_member_oid(elem_oids_seen, elem_oid))
 			{
+				struct path_element *pe;
+
 				/*
 				 * Create path_element object if the new element qualifies the
 				 * element pattern kind.
 				 */
-				struct path_element *pe = create_pe_for_element(pf, elem_oid);
+				pe = create_pe_for_element(pf, elem_oid, provenances, pidx);
 
 				if (pe)
 				{
@@ -1016,6 +1088,8 @@ struct replace_property_refs_context
 {
 	Oid			propgraphid;
 	const List *mappings;
+	Provenances *provenances;
+	ProvenanceIndex pidx;
 };
 
 static Node *
@@ -1090,7 +1164,8 @@ replace_property_refs_mutator(Node *node, struct replace_property_refs_context *
 				}
 
 				n = stringToNode(TextDatumGetCString(SysCacheGetAttrNotNull(PROPGRAPHLABELPROP,
-																			tup, Anum_pg_propgraph_label_property_plpexpr)));
+																			tup, Anum_pg_propgraph_label_property_plpexpr)),
+								 context->pidx);
 				ChangeVarNodes(n, 1, mapping_factor->factorpos + 1, 0);
 
 				ReleaseSysCache(tup);
@@ -1131,7 +1206,9 @@ replace_property_refs_mutator(Node *node, struct replace_property_refs_context *
 				 * Rule 2.b.
 				 */
 				n = get_element_property_expr(found_mapping->elemoid, gpr->propid,
-											  mapping_factor->factorpos + 1);
+											  mapping_factor->factorpos + 1,
+											  context->provenances,
+											  context->pidx);
 
 				if (!n)
 					n = (Node *) makeNullConst(gpr->typeId, gpr->typmod, gpr->collation);
@@ -1152,7 +1229,8 @@ replace_property_refs_mutator(Node *node, struct replace_property_refs_context *
 }
 
 static Node *
-replace_property_refs(Oid propgraphid, Node *node, const List *mappings)
+replace_property_refs(Oid propgraphid, Node *node, const List *mappings,
+					  Provenances *provenances, ProvenanceIndex pidx)
 {
 	struct replace_property_refs_context context;
 
@@ -1166,7 +1244,11 @@ replace_property_refs(Oid propgraphid, Node *node, const List *mappings)
  * Build join qualification expressions between edge and vertex tables.
  */
 static List *
-build_edge_vertex_link_quals(HeapTuple edgetup, int edgerti, int refrti, Oid refid, AttrNumber catalog_key_attnum, AttrNumber catalog_ref_attnum, AttrNumber catalog_eqop_attnum)
+build_edge_vertex_link_quals(HeapTuple edgetup, int edgerti, int refrti,
+							 Oid refid, AttrNumber catalog_key_attnum,
+							 AttrNumber catalog_ref_attnum,
+							 AttrNumber catalog_eqop_attnum,
+							 Provenances *provenances, ProvenanceIndex pidx)
 {
 	List	   *quals = NIL;
 	Form_pg_propgraph_element pgeform;
@@ -1177,8 +1259,11 @@ build_edge_vertex_link_quals(HeapTuple edgetup, int edgerti, int refrti, Oid ref
 	int			n1,
 				n2,
 				n3;
-	ParseState *pstate = make_parsestate(NULL);
+	ParseState *pstate;
 	Oid			refrelid = GetSysCacheOid1(PROPGRAPHELOID, Anum_pg_propgraph_element_pgerelid, ObjectIdGetDatum(refid));
+
+	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
 
 	pgeform = (Form_pg_propgraph_element) GETSTRUCT(edgetup);
 
@@ -1249,6 +1334,7 @@ build_edge_vertex_link_quals(HeapTuple edgetup, int edgerti, int refrti, Oid ref
 		/* opcollid and inputcollid will be set by parse_collate.c */
 		linkqual->args = args;
 		linkqual->location = -1;
+		linkqual->pidx = pidx;
 
 		ReleaseSysCache(tup);
 		quals = lappend(quals, linkqual);
@@ -1302,7 +1388,8 @@ is_property_associated_with_label(Oid labeloid, Oid propoid)
  * NULL.
  */
 static Node *
-get_element_property_expr(Oid elemoid, Oid propoid, int rtindex)
+get_element_property_expr(Oid elemoid, Oid propoid, int rtindex,
+						  Provenances *provenances, ProvenanceIndex pidx)
 {
 	Relation	rel;
 	SysScanDesc scan;
@@ -1328,7 +1415,7 @@ get_element_property_expr(Oid elemoid, Oid propoid, int rtindex)
 		if (!proptup)
 			continue;
 		n = stringToNode(TextDatumGetCString(SysCacheGetAttrNotNull(PROPGRAPHLABELPROP,
-																	proptup, Anum_pg_propgraph_label_property_plpexpr)));
+																	proptup, Anum_pg_propgraph_label_property_plpexpr)), pidx);
 		ChangeVarNodes(n, 1, rtindex, 0);
 
 		ReleaseSysCache(proptup);

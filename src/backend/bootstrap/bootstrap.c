@@ -32,6 +32,7 @@
 #include "common/link-canary.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "port/pg_getopt_ctx.h"
 #include "postmaster/postmaster.h"
 #include "storage/bufpage.h"
@@ -1188,7 +1189,8 @@ build_indices(void)
 		heap = table_open(ILHead->il_heap, NoLock);
 		ind = index_open(ILHead->il_ind, NoLock);
 
-		index_build(heap, ind, ILHead->il_info, false, false, false);
+		index_build(heap, ind, ILHead->il_info, false, false, false,
+					InitProvenancesForBootstrap());
 
 		index_close(ind, NoLock);
 		table_close(heap, NoLock);

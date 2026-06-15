@@ -14,6 +14,9 @@
 #ifndef NODES_H
 #define NODES_H
 
+/* to avoid including nodes/provenance.h */
+typedef int ProvenanceIndex;
+
 /*
  * The first field of every node is NodeTag. Each node created (with makeNode)
  * will have one of the following tags as the value of its first field.
@@ -209,7 +212,7 @@ extern char *bmsToString(const struct Bitmapset *bms);
 /*
  * nodes/{readfuncs.c,read.c}
  */
-extern void *stringToNode(const char *str);
+extern void *stringToNode(const char *str, ProvenanceIndex pidx);
 #ifdef DEBUG_NODE_TESTS_ENABLED
 extern void *stringToNodeWithLocations(const char *str);
 #endif

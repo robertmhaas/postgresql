@@ -44,6 +44,7 @@
 #include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
+#include "nodes/provenance.h"
 #include "utils/tuplestore.h"
 
 PG_MODULE_MAGIC_EXT(
@@ -51,11 +52,13 @@ PG_MODULE_MAGIC_EXT(
 					.version = PG_VERSION
 );
 
-static HTAB *load_categories_hash(char *cats_sql, MemoryContext per_query_ctx);
+static HTAB *load_categories_hash(char *cats_sql, MemoryContext per_query_ctx,
+								  Provenances *provenances);
 static Tuplestorestate *get_crosstab_tuplestore(char *sql,
 												HTAB *crosstab_hash,
 												TupleDesc tupdesc,
-												bool randomAccess);
+												bool randomAccess,
+												Provenances *provenances);
 static void validateConnectbyTupleDesc(TupleDesc td, bool show_branch, bool show_serial);
 static void compatCrosstabTupleDescs(TupleDesc ret_tupdesc, TupleDesc sql_tupdesc);
 static void compatConnectbyTupleDescs(TupleDesc ret_tupdesc, TupleDesc sql_tupdesc);
@@ -71,7 +74,8 @@ static Tuplestorestate *connectby(char *relname,
 								  bool show_serial,
 								  MemoryContext per_query_ctx,
 								  bool randomAccess,
-								  AttInMetadata *attinmeta);
+								  AttInMetadata *attinmeta,
+								  Provenances *provenances);
 static void build_tuplestore_recursively(char *key_fld,
 										 char *parent_key_fld,
 										 char *relname,
@@ -86,7 +90,8 @@ static void build_tuplestore_recursively(char *key_fld,
 										 bool show_serial,
 										 MemoryContext per_query_ctx,
 										 AttInMetadata *attinmeta,
-										 Tuplestorestate *tupstore);
+										 Tuplestorestate *tupstore,
+										 Provenances *provenances);
 
 typedef struct
 {
@@ -393,7 +398,7 @@ crosstab(PG_FUNCTION_ARGS)
 	SPI_connect();
 
 	/* Retrieve the desired rows */
-	ret = SPI_execute(sql, true, 0);
+	ret = SPI_execute(sql, true, 0, InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 	proc = SPI_processed;
 
 	/* If no qualifying tuples, fall out early */
@@ -676,16 +681,19 @@ crosstab_hash(PG_FUNCTION_ARGS)
 				 errdetail("Return row must have at least two columns.")));
 
 	/* load up the categories hash table */
-	crosstab_hash = load_categories_hash(cats_sql, per_query_ctx);
+	crosstab_hash = load_categories_hash(cats_sql, per_query_ctx,
+										 InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	/* let the caller know we're sending back a tuplestore */
 	rsinfo->returnMode = SFRM_Materialize;
 
 	/* now go build it */
-	rsinfo->setResult = get_crosstab_tuplestore(sql,
-												crosstab_hash,
-												tupdesc,
-												rsinfo->allowedModes & SFRM_Materialize_Random);
+	rsinfo->setResult =
+		get_crosstab_tuplestore(sql,
+								crosstab_hash,
+								tupdesc,
+								rsinfo->allowedModes & SFRM_Materialize_Random,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	/*
 	 * SFRM_Materialize mode expects us to return a NULL Datum. The actual
@@ -704,7 +712,8 @@ crosstab_hash(PG_FUNCTION_ARGS)
  * load up the categories hash table
  */
 static HTAB *
-load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
+load_categories_hash(char *cats_sql, MemoryContext per_query_ctx,
+					 Provenances *provenances)
 {
 	HTAB	   *crosstab_hash;
 	HASHCTL		ctl;
@@ -730,7 +739,7 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 	SPI_connect();
 
 	/* Retrieve the category name rows */
-	ret = SPI_execute(cats_sql, true, 0);
+	ret = SPI_execute(cats_sql, true, 0, provenances);
 	proc = SPI_processed;
 
 	/* Check for qualifying tuples */
@@ -793,7 +802,8 @@ static Tuplestorestate *
 get_crosstab_tuplestore(char *sql,
 						HTAB *crosstab_hash,
 						TupleDesc tupdesc,
-						bool randomAccess)
+						bool randomAccess,
+						Provenances *provenances)
 {
 	Tuplestorestate *tupstore;
 	int			num_categories = hash_get_num_entries(crosstab_hash);
@@ -810,7 +820,7 @@ get_crosstab_tuplestore(char *sql,
 	SPI_connect();
 
 	/* Now retrieve the crosstab source rows */
-	ret = SPI_execute(sql, true, 0);
+	ret = SPI_execute(sql, true, 0, provenances);
 	proc = SPI_processed;
 
 	/* Check for qualifying tuples */
@@ -1037,7 +1047,8 @@ connectby_text(PG_FUNCTION_ARGS)
 								  show_serial,
 								  per_query_ctx,
 								  rsinfo->allowedModes & SFRM_Materialize_Random,
-								  attinmeta);
+								  attinmeta,
+								  InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 	rsinfo->setDesc = tupdesc;
 
 	MemoryContextSwitchTo(oldcontext);
@@ -1116,7 +1127,8 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 								  show_serial,
 								  per_query_ctx,
 								  rsinfo->allowedModes & SFRM_Materialize_Random,
-								  attinmeta);
+								  attinmeta,
+								  InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 	rsinfo->setDesc = tupdesc;
 
 	MemoryContextSwitchTo(oldcontext);
@@ -1147,7 +1159,8 @@ connectby(char *relname,
 		  bool show_serial,
 		  MemoryContext per_query_ctx,
 		  bool randomAccess,
-		  AttInMetadata *attinmeta)
+		  AttInMetadata *attinmeta,
+		  Provenances *provenances)
 {
 	Tuplestorestate *tupstore = NULL;
 	MemoryContext oldcontext;
@@ -1179,7 +1192,8 @@ connectby(char *relname,
 								 show_serial,
 								 per_query_ctx,
 								 attinmeta,
-								 tupstore);
+								 tupstore,
+								 provenances);
 
 	SPI_finish();
 
@@ -1201,7 +1215,8 @@ build_tuplestore_recursively(char *key_fld,
 							 bool show_serial,
 							 MemoryContext per_query_ctx,
 							 AttInMetadata *attinmeta,
-							 Tuplestorestate *tupstore)
+							 Tuplestorestate *tupstore,
+							 Provenances *provenances)
 {
 	TupleDesc	tupdesc = attinmeta->tupdesc;
 	int			ret;
@@ -1289,7 +1304,7 @@ build_tuplestore_recursively(char *key_fld,
 	}
 
 	/* Retrieve the desired rows */
-	ret = SPI_execute(sql.data, true, 0);
+	ret = SPI_execute(sql.data, true, 0, provenances);
 	proc = SPI_processed;
 
 	/* Check for qualifying tuples */
@@ -1385,7 +1400,8 @@ build_tuplestore_recursively(char *key_fld,
 											 show_serial,
 											 per_query_ctx,
 											 attinmeta,
-											 tupstore);
+											 tupstore,
+											 provenances);
 
 			xpfree(current_key);
 			xpfree(current_key_parent);

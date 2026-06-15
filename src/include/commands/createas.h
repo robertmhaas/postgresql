@@ -27,7 +27,8 @@ extern ObjectAddress ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *st
 
 extern int	GetIntoRelEFlags(IntoClause *intoClause);
 
-extern DestReceiver *CreateIntoRelDestReceiver(IntoClause *intoClause);
+extern DestReceiver *CreateIntoRelDestReceiver(IntoClause *intoClause,
+											   Provenances *provenances);
 
 extern bool CreateTableAsRelExists(CreateTableAsStmt *ctas);
 

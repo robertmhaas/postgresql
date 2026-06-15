@@ -1328,7 +1328,8 @@ extern void btadjustmembers(Oid opfamilyoid,
  * prototypes for functions in nbtsort.c
  */
 extern IndexBuildResult *btbuild(Relation heap, Relation index,
-								 struct IndexInfo *indexInfo);
+								 struct IndexInfo *indexInfo,
+								 struct Provenances *provenances);
 extern void _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc);
 
 #endif							/* NBTREE_H */

@@ -94,6 +94,8 @@ typedef struct CopyFromStateData
 	 */
 	MemoryContext copycontext;	/* per-copy execution context */
 
+	Provenances *provenances;	/* provenance list for expression evaluation */
+
 	AttrNumber	num_defaults;	/* count of att that are missing and have
 								 * default value */
 	FmgrInfo   *in_functions;	/* array of input functions for each attrs */

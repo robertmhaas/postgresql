@@ -37,6 +37,7 @@
 #include "common/pg_prng.h"
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
+#include "nodes/provenance.h"
 #include "storage/smgr.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -171,6 +172,7 @@ typedef struct BTCallbackState
 	bool		heapallindexed;
 	bool		rootdescend;
 	bool		checkunique;
+	Provenances *provenances;
 } BTCallbackState;
 
 PG_FUNCTION_INFO_V1(bt_index_check);
@@ -180,7 +182,8 @@ static void bt_index_check_callback(Relation indrel, Relation heaprel,
 									void *state, bool readonly);
 static void bt_check_every_level(Relation rel, Relation heaprel,
 								 bool heapkeyspace, bool readonly, bool heapallindexed,
-								 bool rootdescend, bool checkunique);
+								 bool rootdescend, bool checkunique,
+								 Provenances *provenances);
 static BtreeLevel bt_check_level_from_leftmost(BtreeCheckState *state,
 											   BtreeLevel level);
 static bool bt_leftmost_ignoring_half_dead(BtreeCheckState *state,
@@ -258,6 +261,10 @@ bt_index_check(PG_FUNCTION_ARGS)
 	args.rootdescend = false;
 	args.parentcheck = false;
 	args.checkunique = false;
+	args.provenances =
+		InitProvenancesForCache(PROVENANCE_FUNCTION,
+								fcinfo->flinfo->fn_oid,
+								fcinfo->flinfo->fn_owner);
 
 	if (PG_NARGS() >= 2)
 		args.heapallindexed = PG_GETARG_BOOL(1);
@@ -290,6 +297,10 @@ bt_index_parent_check(PG_FUNCTION_ARGS)
 	args.rootdescend = false;
 	args.parentcheck = true;
 	args.checkunique = false;
+	args.provenances =
+		InitProvenancesForCache(PROVENANCE_FUNCTION,
+								fcinfo->flinfo->fn_oid,
+								fcinfo->flinfo->fn_owner);
 
 	if (PG_NARGS() >= 2)
 		args.heapallindexed = PG_GETARG_BOOL(1);
@@ -350,7 +361,8 @@ bt_index_check_callback(Relation indrel, Relation heaprel, void *state, bool rea
 
 	/* Check index, possibly against table it is an index on */
 	bt_check_every_level(indrel, heaprel, heapkeyspace, readonly,
-						 args->heapallindexed, args->rootdescend, args->checkunique);
+						 args->heapallindexed, args->rootdescend,
+						 args->checkunique, args->provenances);
 }
 
 /*
@@ -379,7 +391,7 @@ bt_index_check_callback(Relation indrel, Relation heaprel, void *state, bool rea
 static void
 bt_check_every_level(Relation rel, Relation heaprel, bool heapkeyspace,
 					 bool readonly, bool heapallindexed, bool rootdescend,
-					 bool checkunique)
+					 bool checkunique, Provenances *provenances)
 {
 	BtreeCheckState *state;
 	Page		metapage;
@@ -588,7 +600,8 @@ bt_check_every_level(Relation rel, Relation heaprel, bool heapkeyspace,
 			 RelationGetRelationName(state->heaprel));
 
 		table_index_build_scan(state->heaprel, state->rel, indexinfo, true, false,
-							   bt_tuple_present_callback, state, scan);
+							   bt_tuple_present_callback, state, scan,
+							   provenances);
 
 		ereport(DEBUG1,
 				(errmsg_internal("finished verifying presence of " INT64_FORMAT " tuples from table \"%s\" with bitset %.2f%% set",

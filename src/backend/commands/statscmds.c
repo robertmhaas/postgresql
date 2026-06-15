@@ -948,10 +948,11 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 
 /*
  * StatisticsGetRelation: given a statistics object's OID, get the OID of
- * the relation it is defined on.  Uses the system cache.
+ * the relation it is defined on.  Uses the system cache. Also returns the
+ * owner of the statistics object via *stxowner.
  */
 Oid
-StatisticsGetRelation(Oid statId, bool missing_ok)
+StatisticsGetRelation(Oid statId, Oid *stxowner, bool missing_ok)
 {
 	HeapTuple	tuple;
 	Form_pg_statistic_ext stx;
@@ -961,13 +962,17 @@ StatisticsGetRelation(Oid statId, bool missing_ok)
 	if (!HeapTupleIsValid(tuple))
 	{
 		if (missing_ok)
+		{
+			*stxowner = InvalidOid;
 			return InvalidOid;
+		}
 		elog(ERROR, "cache lookup failed for statistics object %u", statId);
 	}
 	stx = (Form_pg_statistic_ext) GETSTRUCT(tuple);
 	Assert(stx->oid == statId);
 
 	result = stx->stxrelid;
+	*stxowner = stx->stxowner;
 	ReleaseSysCache(tuple);
 	return result;
 }

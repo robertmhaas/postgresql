@@ -61,6 +61,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/parser.h"
 #include "pgstat.h"
@@ -126,7 +127,8 @@ static void index_update_stats(Relation rel,
 							   double reltuples);
 static void IndexCheckExclusion(Relation heapRelation,
 								Relation indexRelation,
-								IndexInfo *indexInfo);
+								IndexInfo *indexInfo,
+								Provenances *provenances);
 static bool validate_index_callback(ItemPointer itemptr, void *opaque);
 static bool ReindexIsCurrentlyProcessingIndex(Oid indexOid);
 static void SetReindexProcessing(Oid heapOid, Oid indexOid);
@@ -747,7 +749,8 @@ index_create(Relation heapRelation,
 			 uint16 constr_flags,
 			 bool allow_system_table_mods,
 			 bool is_internal,
-			 Oid *constraintId)
+			 Oid *constraintId,
+			 Provenances *provenances)
 {
 	Oid			heapRelationId = RelationGetRelid(heapRelation);
 	Relation	pg_class;
@@ -1281,7 +1284,7 @@ index_create(Relation heapRelation,
 	else
 	{
 		index_build(heapRelation, indexRelation, indexInfo, false, true,
-					progress);
+					progress, provenances);
 	}
 
 	/*
@@ -1304,7 +1307,8 @@ index_create(Relation heapRelation,
  */
 Oid
 index_create_copy(Relation heapRelation, uint16 flags,
-				  Oid oldIndexId, Oid tablespaceOid, const char *newName)
+				  Oid oldIndexId, Oid tablespaceOid, const char *newName,
+				  Provenances *provenances)
 {
 	Relation	indexRelation;
 	IndexInfo  *oldInfo,
@@ -1367,22 +1371,28 @@ index_create_copy(Relation heapRelation, uint16 flags,
 	{
 		Datum		exprDatum;
 		char	   *exprString;
+		ProvenanceIndex pidx;
+
+		pidx = ProvenanceForIndexExpression(provenances, indexRelation, 0);
 
 		exprDatum = SysCacheGetAttrNotNull(INDEXRELID, indexTuple,
 										   Anum_pg_index_indexprs);
 		exprString = TextDatumGetCString(exprDatum);
-		indexExprs = (List *) stringToNode(exprString);
+		indexExprs = (List *) stringToNode(exprString, pidx);
 		pfree(exprString);
 	}
 	if (oldInfo->ii_Predicate != NIL)
 	{
 		Datum		predDatum;
 		char	   *predString;
+		ProvenanceIndex pidx;
+
+		pidx = ProvenanceForIndexPredicate(provenances, indexRelation, 0);
 
 		predDatum = SysCacheGetAttrNotNull(INDEXRELID, indexTuple,
 										   Anum_pg_index_indpred);
 		predString = TextDatumGetCString(predDatum);
-		indexPreds = (List *) stringToNode(predString);
+		indexPreds = (List *) stringToNode(predString, pidx);
 
 		/* Also convert to implicit-AND format */
 		indexPreds = make_ands_implicit((Expr *) indexPreds);
@@ -1396,7 +1406,9 @@ index_create_copy(Relation heapRelation, uint16 flags,
 							oldInfo->ii_NumIndexKeyAttrs,
 							oldInfo->ii_Am,
 							indexExprs,
+							provenances,
 							indexPreds,
+							provenances,
 							oldInfo->ii_Unique,
 							oldInfo->ii_NullsNotDistinct,
 							!concurrently,	/* isready */
@@ -1480,7 +1492,8 @@ index_create_copy(Relation heapRelation, uint16 flags,
 							  0,
 							  true, /* allow table to be a system catalog? */
 							  false,	/* is_internal? */
-							  NULL);
+							  NULL,
+							  provenances);
 
 	/* Close the relations used and clean up */
 	index_close(indexRelation, NoLock);
@@ -1501,7 +1514,8 @@ index_create_copy(Relation heapRelation, uint16 flags,
  */
 void
 index_concurrently_build(Oid heapRelationId,
-						 Oid indexRelationId)
+						 Oid indexRelationId,
+						 Provenances *provenances)
 {
 	Relation	heapRel;
 	Oid			save_userid;
@@ -1540,7 +1554,8 @@ index_concurrently_build(Oid heapRelationId,
 	indexInfo->ii_BrokenHotChain = false;
 
 	/* Now build the index */
-	index_build(heapRel, indexRelation, indexInfo, false, true, true);
+	index_build(heapRel, indexRelation, indexInfo, false, true, true,
+				provenances);
 
 	/* Roll back any GUC changes executed by index functions */
 	AtEOXact_GUC(false, save_nestlevel);
@@ -2060,7 +2075,7 @@ index_constraint_create(Relation heapRelation,
 
 		(void) CreateTrigger(trigger, NULL, RelationGetRelid(heapRelation),
 							 InvalidOid, conOid, indexRelationId, InvalidOid,
-							 InvalidOid, NULL, true, false);
+							 InvalidOid, NULL, true, false, NULL);
 	}
 
 	/*
@@ -2449,6 +2464,10 @@ BuildIndexInfo(Relation index)
 	Form_pg_index indexStruct = index->rd_index;
 	int			i;
 	int			numAtts;
+	Provenances *expression_provenances = NULL;
+	Provenances *predicate_provenances = NULL;
+	List	   *index_expressions;
+	List	   *index_predicate;
 
 	/* check the number of keys, and copy attr numbers into the IndexInfo */
 	numAtts = indexStruct->indnatts;
@@ -2460,11 +2479,19 @@ BuildIndexInfo(Relation index)
 	 * Create the node, fetching any expressions needed for expressional
 	 * indexes and index predicate if any.
 	 */
+	index_expressions = RelationGetIndexExpressions(index);
+	expression_provenances =
+		copyObject(index->rd_indexprs_provenances);
+	index_predicate = RelationGetIndexPredicate(index);
+	predicate_provenances =
+		copyObject(index->rd_indpred_provenances);
 	ii = makeIndexInfo(indexStruct->indnatts,
 					   indexStruct->indnkeyatts,
 					   index->rd_rel->relam,
-					   RelationGetIndexExpressions(index),
-					   RelationGetIndexPredicate(index),
+					   index_expressions,
+					   expression_provenances,
+					   index_predicate,
+					   predicate_provenances,
 					   indexStruct->indisunique,
 					   indexStruct->indnullsnotdistinct,
 					   indexStruct->indisready,
@@ -2519,12 +2546,18 @@ BuildDummyIndexInfo(Relation index)
 	/*
 	 * Create the node, using dummy index expressions, and pretending there is
 	 * no predicate.
+	 *
+	 * We don't need any provenances here, because there are no predicates,
+	 * and the dummy index expressions are Const nodes (i.e. there is nothing
+	 * to execute).
 	 */
 	ii = makeIndexInfo(indexStruct->indnatts,
 					   indexStruct->indnkeyatts,
 					   index->rd_rel->relam,
 					   RelationGetDummyIndexExpressions(index),
+					   NULL,
 					   NIL,
+					   NULL,
 					   indexStruct->indisunique,
 					   indexStruct->indnullsnotdistinct,
 					   indexStruct->indisready,
@@ -2758,6 +2791,13 @@ FormIndexDatum(IndexInfo *indexInfo,
 		indexInfo->ii_ExpressionsState == NIL)
 	{
 		/* First time through, set up expression evaluation state */
+		/*
+		 * PROVENANCE-TODO: Caller should have already initialized
+		 * estate->es_provenances, but we'll need to incorporate the
+		 * indexInfo's provenances and, once we have provenance indexes,
+		 * adjust the expression to be relative to the estate's indexes, or
+		 * get ExecPrepareExprList to do that for us.
+		 */
 		indexInfo->ii_ExpressionsState =
 			ExecPrepareExprList(indexInfo->ii_Expressions, estate);
 		/* Check caller has set up context correctly */
@@ -3023,7 +3063,8 @@ index_build(Relation heapRelation,
 			IndexInfo *indexInfo,
 			bool isreindex,
 			bool parallel,
-			bool progress)
+			bool progress,
+			Provenances *provenances)
 {
 	IndexBuildResult *stats;
 	Oid			save_userid;
@@ -3097,7 +3138,7 @@ index_build(Relation heapRelation,
 	 * Call the access method's build procedure
 	 */
 	stats = indexRelation->rd_indam->ambuild(heapRelation, indexRelation,
-											 indexInfo);
+											 indexInfo, provenances);
 	Assert(stats);
 
 	/*
@@ -3191,7 +3232,8 @@ index_build(Relation heapRelation,
 	 * see comments for IndexCheckExclusion.)
 	 */
 	if (indexInfo->ii_ExclusionOps != NULL)
-		IndexCheckExclusion(heapRelation, indexRelation, indexInfo);
+		IndexCheckExclusion(heapRelation, indexRelation, indexInfo,
+							provenances);
 
 	/* Roll back any GUC changes executed by index functions */
 	AtEOXact_GUC(false, save_nestlevel);
@@ -3215,7 +3257,8 @@ index_build(Relation heapRelation,
 static void
 IndexCheckExclusion(Relation heapRelation,
 					Relation indexRelation,
-					IndexInfo *indexInfo)
+					IndexInfo *indexInfo,
+					Provenances *provenances)
 {
 	TableScanDesc scan;
 	Datum		values[INDEX_MAX_KEYS];
@@ -3239,11 +3282,17 @@ IndexCheckExclusion(Relation heapRelation,
 	 * predicates.  Also a slot to hold the current tuple.
 	 */
 	estate = CreateExecutorState();
+	estate->es_provenances = InitProvenances(provenances, 0);
 	econtext = GetPerTupleExprContext(estate);
 	slot = table_slot_create(heapRelation, NULL);
 
 	/* Arrange for econtext's scan tuple to be the tuple under test */
 	econtext->ecxt_scantuple = slot;
+
+	/* Combine cached provenances with whatever caller supplied. */
+	if (indexInfo->ii_PredicateProvenances != NULL)
+		AppendProvenances(estate->es_provenances,
+						  indexInfo->ii_PredicateProvenances, 0);
 
 	/* Set up execution state for predicate, if any. */
 	predicate = ExecPrepareQual(indexInfo->ii_Predicate, estate);
@@ -3368,7 +3417,8 @@ IndexCheckExclusion(Relation heapRelation,
  * add yet more locking issues.
  */
 void
-validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
+validate_index(Oid heapId, Oid indexId, Snapshot snapshot,
+			   Provenances *provenances)
 {
 	Relation	heapRelation,
 				indexRelation;
@@ -3474,7 +3524,8 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 							  indexRelation,
 							  indexInfo,
 							  snapshot,
-							  &state);
+							  &state,
+							  provenances);
 
 	/* Done with tuplesort object */
 	tuplesort_end(state.tuplesort);
@@ -3628,7 +3679,8 @@ IndexGetRelation(Oid indexId, bool missing_ok)
 void
 reindex_index(const ReindexStmt *stmt, Oid indexId,
 			  bool skip_constraint_checks, char persistence,
-			  const ReindexParams *params)
+			  const ReindexParams *params,
+			  Provenances *provenances)
 {
 	Relation	iRel,
 				heapRelation;
@@ -3832,7 +3884,8 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 
 	/* Initialize the index and rebuild */
 	/* Note: we do not need to re-establish pkey setting */
-	index_build(heapRelation, iRel, indexInfo, true, true, progress);
+	index_build(heapRelation, iRel, indexInfo, true, true, progress,
+				provenances);
 
 	/* Re-allow use of target index */
 	ResetReindexProcessing();
@@ -3967,7 +4020,8 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
  */
 bool
 reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
-				 const ReindexParams *params)
+				 const ReindexParams *params,
+				 Provenances *provenances)
 {
 	Relation	rel;
 	Oid			toast_relid;
@@ -4046,7 +4100,8 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
 
 		newparams.options &= ~(REINDEXOPT_MISSING_OK);
 		newparams.tablespaceOid = InvalidOid;
-		result |= reindex_relation(stmt, toast_relid, flags, &newparams);
+		result |= reindex_relation(stmt, toast_relid, flags, &newparams,
+								   provenances);
 	}
 
 	/*
@@ -4092,7 +4147,7 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
 		}
 
 		reindex_index(stmt, indexOid, !(flags & REINDEX_REL_CHECK_CONSTRAINTS),
-					  persistence, params);
+					  persistence, params, provenances);
 
 		CommandCounterIncrement();
 

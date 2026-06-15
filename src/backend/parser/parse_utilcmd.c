@@ -49,6 +49,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/analyze.h"
 #include "parser/parse_clause.h"
@@ -1223,7 +1224,8 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			 * find sequence owned by old column; extract sequence parameters;
 			 * build new create sequence command
 			 */
-			seq_relid = getIdentitySequence(relation, attribute->attnum, false);
+			seq_relid = getIdentitySequence(relation, attribute->attnum,
+											false, NULL);
 			seq_options = sequence_options(seq_relid);
 			generateSerialExtraStmts(cxt, def,
 									 InvalidOid, seq_options,
@@ -1339,7 +1341,8 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
  * commands that should be run to generate indexes etc.
  */
 List *
-expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
+expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause,
+					  Provenances *provenances)
 {
 	List	   *result = NIL;
 	List	   *atsubcmds = NIL;
@@ -1413,7 +1416,9 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 				AlterTableCmd *atsubcmd;
 				bool		found_whole_row;
 
-				this_default = TupleDescGetDefault(tupleDesc, parent_attno);
+				this_default = TupleDescGetDefault(tupleDesc, parent_attno,
+												   provenances,
+												   relation->rd_rel->relowner);
 				if (this_default == NULL)
 					elog(ERROR, "default expression not found for attribute %d of relation \"%s\"",
 						 parent_attno, RelationGetRelationName(relation));
@@ -1456,6 +1461,7 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 
 		for (ccnum = 0; ccnum < constr->num_check; ccnum++)
 		{
+			Oid			ccoid = constr->check[ccnum].ccoid;
 			char	   *ccname = constr->check[ccnum].ccname;
 			char	   *ccbin = constr->check[ccnum].ccbin;
 			bool		ccenforced = constr->check[ccnum].ccenforced;
@@ -1464,8 +1470,12 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 			bool		found_whole_row;
 			Constraint *n;
 			AlterTableCmd *atsubcmd;
+			ProvenanceIndex pidx;
 
-			ccbin_node = map_variable_attnos(stringToNode(ccbin),
+			pidx = ProvenanceForConstraint(provenances, ccoid,
+										   relation->rd_rel->relowner, 0);
+			ccbin_node = stringToNode(ccbin, pidx);
+			ccbin_node = map_variable_attnos(ccbin_node,
 											 1, 0,
 											 attmap,
 											 InvalidOid, &found_whole_row);
@@ -1859,7 +1869,8 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 		char	   *exprsString;
 
 		exprsString = TextDatumGetCString(datum);
-		indexprs = (List *) stringToNode(exprsString);
+		/* PROVENANCE-TODO: no provenances available?! */
+		indexprs = (List *) stringToNode(exprsString, -2);
 	}
 	else
 		indexprs = NIL;
@@ -2011,7 +2022,8 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 
 		/* Convert text string to node tree */
 		pred_str = TextDatumGetCString(datum);
-		pred_tree = (Node *) stringToNode(pred_str);
+		/* PROVENANCE-TODO: no provenances available?! */
+		pred_tree = (Node *) stringToNode(pred_str, -2);
 
 		/* Adjust Vars to match new table's column numbering */
 		pred_tree = map_variable_attnos(pred_tree,
@@ -2028,6 +2040,10 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 							   RelationGetRelationName(source_idx))));
 
 		index->whereClause = pred_tree;
+
+		/* Provenance for pred_tree is the index from which we copied it. */
+		index->whereProvenances =
+			InitProvenancesForIndexPredicateCache(source_idx);
 	}
 
 	/* Clean up */
@@ -2129,7 +2145,8 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 		char	   *exprsString;
 
 		exprsString = TextDatumGetCString(datum);
-		exprs = (List *) stringToNode(exprsString);
+		/* PROVENANCE-TODO: no provenances available?! */
+		exprs = (List *) stringToNode(exprsString, -2);
 
 		foreach(lc, exprs)
 		{
@@ -2472,14 +2489,14 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 					 errdetail("Cannot create a primary key or unique constraint using such an index."),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
-		if (RelationGetIndexExpressions(index_rel) != NIL)
+		if (RelationHasIndexExpressions(index_rel))
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("index \"%s\" contains expressions", index_name),
 					 errdetail("Cannot create a primary key or unique constraint using such an index."),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
-		if (RelationGetIndexPredicate(index_rel) != NIL)
+		if (RelationHasIndexPredicate(index_rel))
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("\"%s\" is a partial index", index_name),
@@ -3059,7 +3076,8 @@ transformFKConstraints(CreateStmtContext *cxt,
  * relation.
  */
 IndexStmt *
-transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
+transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString,
+				   Provenances *provenances)
 {
 	ParseState *pstate;
 	ParseNamespaceItem *nsitem;
@@ -3073,6 +3091,7 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
 	/* Set up pstate */
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
+	pstate->p_provenances = provenances;
 
 	/*
 	 * Put the parent table into the rtable so that the expressions can refer
@@ -3096,6 +3115,8 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
 												 "WHERE");
 		/* we have to fix its collations too */
 		assign_expr_collations(pstate, stmt->whereClause);
+		/* also set the provenance for the WHERE clause */
+		stmt->whereProvenances = InitProvenances(provenances, 0);
 	}
 
 	/* take care of any index expressions */
@@ -3154,9 +3175,9 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
  * relation.
  */
 CreateStatsStmt *
-transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
+transformStatsStmt(ParseState *pstate, Oid relid, CreateStatsStmt *stmt)
 {
-	ParseState *pstate;
+	ParseState *child_pstate;
 	ParseNamespaceItem *nsitem;
 	ListCell   *l;
 	Relation	rel;
@@ -3165,9 +3186,10 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 	if (stmt->transformed)
 		return stmt;
 
-	/* Set up pstate */
-	pstate = make_parsestate(NULL);
-	pstate->p_sourcetext = queryString;
+	/* Set up child_pstate */
+	child_pstate = make_parsestate(NULL);
+	child_pstate->p_sourcetext = pstate->p_sourcetext;
+	child_pstate->p_provenances = pstate->p_provenances;
 
 	/*
 	 * Put the parent table into the rtable so that the expressions can refer
@@ -3175,12 +3197,12 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 	 * relation, but we still need to open it.
 	 */
 	rel = relation_open(relid, NoLock);
-	nsitem = addRangeTableEntryForRelation(pstate, rel,
+	nsitem = addRangeTableEntryForRelation(child_pstate, rel,
 										   AccessShareLock,
 										   NULL, false, true);
 
 	/* no to join list, yes to namespaces */
-	addNSItemToQuery(pstate, nsitem, false, true, true);
+	addNSItemToQuery(child_pstate, nsitem, false, true, true);
 
 	/* take care of any expressions */
 	foreach(l, stmt->exprs)
@@ -3190,11 +3212,11 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 		if (selem->expr)
 		{
 			/* Now do parse transformation of the expression */
-			selem->expr = transformExpr(pstate, selem->expr,
+			selem->expr = transformExpr(child_pstate, selem->expr,
 										EXPR_KIND_STATS_EXPRESSION);
 
 			/* We have to fix its collations too */
-			assign_expr_collations(pstate, selem->expr);
+			assign_expr_collations(child_pstate, selem->expr);
 		}
 	}
 
@@ -3202,12 +3224,12 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
 	 * Check that only the base rel is mentioned.  (This should be dead code
 	 * now that add_missing_from is history.)
 	 */
-	if (list_length(pstate->p_rtable) != 1)
+	if (list_length(child_pstate->p_rtable) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 				 errmsg("statistics expressions can refer only to the table being referenced")));
 
-	free_parsestate(pstate);
+	free_parsestate(child_pstate);
 
 	/* Close relation */
 	table_close(rel, NoLock);
@@ -3229,11 +3251,10 @@ transformStatsStmt(Oid relid, CreateStatsStmt *stmt, const char *queryString)
  * transformed results.
  */
 void
-transformRuleStmt(RuleStmt *stmt, const char *queryString,
+transformRuleStmt(ParseState *pstate, RuleStmt *stmt,
 				  List **actions, Node **whereClause)
 {
 	Relation	rel;
-	ParseState *pstate;
 	ParseNamespaceItem *oldnsitem;
 	ParseNamespaceItem *newnsitem;
 
@@ -3249,10 +3270,6 @@ transformRuleStmt(RuleStmt *stmt, const char *queryString,
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("rules on materialized views are not supported")));
-
-	/* Set up pstate */
-	pstate = make_parsestate(NULL);
-	pstate->p_sourcetext = queryString;
 
 	/*
 	 * NOTE: 'OLD' must always have a varno equal to 1 and 'NEW' equal to 2.
@@ -3346,9 +3363,10 @@ transformRuleStmt(RuleStmt *stmt, const char *queryString,
 
 			/*
 			 * Since outer ParseState isn't parent of inner, have to pass down
-			 * the query text by hand.
+			 * the query text and provenances by hand.
 			 */
-			sub_pstate->p_sourcetext = queryString;
+			sub_pstate->p_sourcetext = pstate->p_sourcetext;
+			sub_pstate->p_provenances = pstate->p_provenances;
 
 			/*
 			 * Set up OLD/NEW in the rtable for this statement.  The entries
@@ -3514,8 +3532,6 @@ transformRuleStmt(RuleStmt *stmt, const char *queryString,
 
 		*actions = newactions;
 	}
-
-	free_parsestate(pstate);
 
 	/* Close relation, but keep the exclusive lock */
 	table_close(rel, NoLock);
@@ -3818,7 +3834,8 @@ transformPartitionCmdForMerge(CreateStmtContext *cxt, PartitionCmd *partcmd)
 AlterTableStmt *
 transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 						const char *queryString,
-						List **beforeStmts, List **afterStmts)
+						List **beforeStmts, List **afterStmts,
+						Provenances *provenances)
 {
 	Relation	rel;
 	TupleDesc	tupdesc;
@@ -3839,6 +3856,7 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 	/* Set up pstate */
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
+	pstate->p_provenances = provenances;
 	nsitem = addRangeTableEntryForRelation(pstate,
 										   rel,
 										   AccessShareLock,
@@ -3959,7 +3977,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 						if (attnum > 0 &&
 							TupleDescAttr(tupdesc, attnum - 1)->attidentity)
 						{
-							Oid			seq_relid = getIdentitySequence(rel, attnum, false);
+							Oid			seq_relid = getIdentitySequence(rel, attnum,
+																		false, NULL);
 							Oid			typeOid = typenameTypeId(pstate, def->typeName);
 							AlterSeqStmt *altseqstmt = makeNode(AlterSeqStmt);
 
@@ -4038,7 +4057,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 								 errmsg("column \"%s\" of relation \"%s\" does not exist",
 										cmd->name, RelationGetRelationName(rel))));
 
-					seq_relid = getIdentitySequence(rel, attnum, true);
+					seq_relid = getIdentitySequence(rel, attnum, true,
+													NULL);
 
 					if (seq_relid)
 					{
@@ -4150,7 +4170,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 		{
 			IndexStmt  *idxstmt = (IndexStmt *) istmt;
 
-			idxstmt = transformIndexStmt(relid, idxstmt, queryString);
+			idxstmt = transformIndexStmt(relid, idxstmt,
+										 queryString, provenances);
 			newcmd = makeNode(AlterTableCmd);
 			newcmd->subtype = OidIsValid(idxstmt->indexOid) ? AT_AddIndexConstraint : AT_AddIndex;
 			newcmd->def = (Node *) idxstmt;
@@ -5194,9 +5215,10 @@ transformPartitionBoundValue(ParseState *pstate, Node *val,
 	if (!IsA(value, Const))
 	{
 		assign_expr_collations(pstate, value);
-		value = (Node *) expression_planner((Expr *) value);
+		value = (Node *) expression_planner((Expr *) value,
+											pstate->p_provenances);
 		value = (Node *) evaluate_expr((Expr *) value, colType, colTypmod,
-									   partCollation);
+									   partCollation, pstate->p_provenances);
 		if (!IsA(value, Const))
 			elog(ERROR, "could not evaluate partition bound expression");
 	}

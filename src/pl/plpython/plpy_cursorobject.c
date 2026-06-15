@@ -130,7 +130,8 @@ PLy_cursor_query(const char *query)
 
 		pg_verifymbstr(query, strlen(query), false);
 
-		plan = SPI_prepare(query, 0, NULL);
+		plan = SPI_prepare(query, 0, NULL,
+						   exec_ctx->curr_proc->provenances);
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare failed: %s",
 				 SPI_result_code_string(SPI_result));

@@ -16,6 +16,8 @@
 #include "access/attnum.h"
 #include "nodes/pg_list.h"
 
+typedef struct Provenances Provenances;
+
 /*
  * RewriteRule -
  *	  holds an info for a rewrite rule
@@ -27,6 +29,7 @@ typedef struct RewriteRule
 	CmdType		event;
 	Node	   *qual;
 	List	   *actions;
+	Provenances *provenances;
 	char		enabled;
 	bool		isInstead;
 } RewriteRule;

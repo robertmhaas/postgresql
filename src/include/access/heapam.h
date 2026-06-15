@@ -46,6 +46,7 @@
 
 typedef struct BulkInsertStateData *BulkInsertState;
 typedef struct GlobalVisState GlobalVisState;
+typedef struct Provenances Provenances;
 typedef struct TupleTableSlot TupleTableSlot;
 typedef struct VacuumCutoffs VacuumCutoffs;
 typedef struct VacuumParams VacuumParams;
@@ -466,7 +467,9 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,
-							const VacuumParams *params, BufferAccessStrategy bstrategy);
+							const VacuumParams *params,
+							BufferAccessStrategy bstrategy,
+							Provenances *provenances);
 #ifdef USE_ASSERT_CHECKING
 extern bool heap_page_is_all_visible(Relation rel, Buffer buf,
 									 GlobalVisState *vistest,

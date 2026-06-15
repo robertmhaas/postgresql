@@ -2,6 +2,7 @@
 
 node_support_input_i = [
   'nodes/nodes.h',
+  'nodes/provenance.h',
   'nodes/primnodes.h',
   'nodes/parsenodes.h',
   'nodes/pathnodes.h',

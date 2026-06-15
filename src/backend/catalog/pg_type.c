@@ -495,7 +495,7 @@ TypeCreate(Oid newTypeOid,
 		GenerateTypeDependencies(tup,
 								 pg_type_desc,
 								 (defaultTypeBin ?
-								  stringToNode(defaultTypeBin) :
+								  stringToNode(defaultTypeBin, PI_NEVER_EXECUTED) :
 								  NULL),
 								 typacl,
 								 relationKind,
@@ -576,7 +576,8 @@ GenerateTypeDependencies(HeapTuple typeTuple,
 		datum = heap_getattr(typeTuple, Anum_pg_type_typdefaultbin,
 							 RelationGetDescr(typeCatalog), &isNull);
 		if (!isNull)
-			defaultExpr = stringToNode(TextDatumGetCString(datum));
+			defaultExpr = stringToNode(TextDatumGetCString(datum),
+									   PI_NEVER_EXECUTED);
 	}
 	/* Extract typacl if caller didn't pass it */
 	if (typacl == NULL)

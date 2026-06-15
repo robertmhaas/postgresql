@@ -34,6 +34,7 @@
 #include "executor/spi.h"
 #include "fmgr.h"
 #include "lib/stringinfo.h"
+#include "miscadmin.h"
 #include "pgstat.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
@@ -86,7 +87,8 @@ initialize_worker_spi(worktable *table)
 					 table->schema);
 
 	debug_query_string = buf.data;
-	ret = SPI_execute(buf.data, true, 0);
+	ret = SPI_execute(buf.data, true, 0,
+					  InitProvenancesForSession());
 	if (ret != SPI_OK_SELECT)
 		elog(FATAL, "SPI_execute failed: error code %d", ret);
 
@@ -116,7 +118,8 @@ initialize_worker_spi(worktable *table)
 		SetCurrentStatementStartTimestamp();
 
 		debug_query_string = buf.data;
-		ret = SPI_execute(buf.data, false, 0);
+		ret = SPI_execute(buf.data, false, 0,
+						  InitProvenancesForSession());
 
 		if (ret != SPI_OK_UTILITY)
 			elog(FATAL, "failed to create my schema");
@@ -259,7 +262,8 @@ worker_spi_main(Datum main_arg)
 		pgstat_report_activity(STATE_RUNNING, buf.data);
 
 		/* We can now execute queries via SPI */
-		ret = SPI_execute(buf.data, false, 0);
+		ret = SPI_execute(buf.data, false, 0,
+						  InitProvenancesForSession());
 
 		if (ret != SPI_OK_UPDATE_RETURNING)
 			elog(FATAL, "cannot select from table %s.%s: error code %d",

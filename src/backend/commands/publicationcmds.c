@@ -337,7 +337,9 @@ pub_rf_contains_invalid_column(Oid pubid, Relation relation, List *ancestors,
 										 INDEX_ATTR_BITMAP_IDENTITY_KEY);
 
 		context.bms_replident = bms;
-		rfnode = stringToNode(TextDatumGetCString(rfdatum));
+
+		rfnode = stringToNode(TextDatumGetCString(rfdatum),
+							  PI_NEVER_EXECUTED);
 		result = contain_invalid_rfcolumn_walker(rfnode, &context);
 	}
 
@@ -708,8 +710,7 @@ check_simple_rowfilter_expr(Node *node, ParseState *pstate)
  * anything not permitted or unexpected is encountered.
  */
 static void
-TransformPubWhereClauses(List *tables, const char *queryString,
-						 bool pubviaroot)
+TransformPubWhereClauses(List *tables, ParseState *pstate, bool pubviaroot)
 {
 	ListCell   *lc;
 
@@ -717,7 +718,7 @@ TransformPubWhereClauses(List *tables, const char *queryString,
 	{
 		ParseNamespaceItem *nsitem;
 		Node	   *whereclause = NULL;
-		ParseState *pstate;
+		ParseState *child_pstate;
 		PublicationRelInfo *pri = (PublicationRelInfo *) lfirst(lc);
 
 		if (pri->whereClause == NULL)
@@ -741,30 +742,33 @@ TransformPubWhereClauses(List *tables, const char *queryString,
 		 * A fresh pstate is required so that we only have "this" table in its
 		 * rangetable
 		 */
-		pstate = make_parsestate(NULL);
-		pstate->p_sourcetext = queryString;
-		nsitem = addRangeTableEntryForRelation(pstate, pri->relation,
+		child_pstate = make_parsestate(NULL);
+		child_pstate->p_sourcetext = pstate->p_sourcetext;
+		child_pstate->p_provenances = pstate->p_provenances;
+		nsitem = addRangeTableEntryForRelation(child_pstate, pri->relation,
 											   AccessShareLock, NULL,
 											   false, false);
-		addNSItemToQuery(pstate, nsitem, false, true, true);
+		addNSItemToQuery(child_pstate, nsitem, false, true, true);
 
-		whereclause = transformWhereClause(pstate,
+		whereclause = transformWhereClause(child_pstate,
 										   copyObject(pri->whereClause),
 										   EXPR_KIND_WHERE,
 										   "PUBLICATION WHERE");
 
 		/* Fix up collation information */
-		assign_expr_collations(pstate, whereclause);
+		assign_expr_collations(child_pstate, whereclause);
 
-		whereclause = expand_generated_columns_in_expr(whereclause, pri->relation, 1);
+		whereclause = expand_generated_columns_in_expr(whereclause,
+													   pri->relation, 1,
+													   pstate->p_provenances);
 
 		/*
 		 * We allow only simple expressions in row filters. See
 		 * check_simple_rowfilter_expr_walker.
 		 */
-		check_simple_rowfilter_expr(whereclause, pstate);
+		check_simple_rowfilter_expr(whereclause, child_pstate);
 
-		free_parsestate(pstate);
+		free_parsestate(child_pstate);
 
 		pri->whereClause = whereclause;
 	}
@@ -970,8 +974,7 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 			List	   *rels;
 
 			rels = OpenTableList(relations);
-			TransformPubWhereClauses(rels, pstate->p_sourcetext,
-									 publish_via_partition_root);
+			TransformPubWhereClauses(rels, pstate, publish_via_partition_root);
 
 			CheckPubRelationColumnList(stmt->pubname, rels,
 									   schemaidlist != NIL,
@@ -1240,7 +1243,7 @@ InvalidatePublicationRels(List *relids)
  */
 static void
 AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
-					   List *tables, const char *queryString,
+					   List *tables, ParseState *pstate,
 					   bool publish_schema)
 {
 	List	   *rels = NIL;
@@ -1259,7 +1262,7 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 
 	if (stmt->action == AP_AddObjects)
 	{
-		TransformPubWhereClauses(rels, queryString, pubform->pubviaroot);
+		TransformPubWhereClauses(rels, pstate, pubform->pubviaroot);
 
 		publish_schema |= is_schema_publication(pubid);
 
@@ -1298,7 +1301,7 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 			oldrelids = GetIncludedPublicationRelations(pubid,
 														PUBLICATION_PART_ROOT);
 
-			TransformPubWhereClauses(rels, queryString, pubform->pubviaroot);
+			TransformPubWhereClauses(rels, pstate, pubform->pubviaroot);
 
 			CheckPubRelationColumnList(stmt->pubname, rels, publish_schema,
 									   pubform->pubviaroot);
@@ -1338,7 +1341,9 @@ AlterPublicationTables(AlterPublicationStmt *stmt, HeapTuple tup,
 												   Anum_pg_publication_rel_prqual,
 												   &isnull);
 				if (!isnull)
-					oldrelwhereclause = stringToNode(TextDatumGetCString(whereClauseDatum));
+					oldrelwhereclause =
+						stringToNode(TextDatumGetCString(whereClauseDatum),
+									 PI_NEVER_EXECUTED);
 
 				/* Transform the int2vector column list to a bitmap. */
 				columnListDatum = SysCacheGetAttr(PUBLICATIONRELMAP, rftuple,
@@ -1712,7 +1717,7 @@ AlterPublication(ParseState *pstate, AlterPublicationStmt *stmt)
 						   stmt->pubname));
 
 		relations = list_concat(relations, exceptrelations);
-		AlterPublicationTables(stmt, tup, relations, pstate->p_sourcetext,
+		AlterPublicationTables(stmt, tup, relations, pstate,
 							   schemaidlist != NIL);
 		AlterPublicationSchemas(stmt, tup, schemaidlist);
 		AlterPublicationAllFlags(stmt, rel, tup);

@@ -25,6 +25,7 @@
  */
 typedef struct PlannerInfo PlannerInfo;
 typedef struct IndexPath IndexPath;
+typedef struct Provenances Provenances;
 
 /* Likewise, this file shouldn't depend on execnodes.h. */
 typedef struct IndexInfo IndexInfo;
@@ -112,7 +113,8 @@ typedef StrategyNumber (*amtranslate_cmptype_function) (CompareType cmptype, Oid
 /* build new index */
 typedef IndexBuildResult *(*ambuild_function) (Relation heapRelation,
 											   Relation indexRelation,
-											   IndexInfo *indexInfo);
+											   IndexInfo *indexInfo,
+											   Provenances *provenances);
 
 /* build empty index */
 typedef void (*ambuildempty_function) (Relation indexRelation);

@@ -144,6 +144,17 @@ _equalA_Const(const A_Const *a, const A_Const *b)
 }
 
 static bool
+_equalProvenances(const Provenances *a, const Provenances *b)
+{
+	if (a->length != b->length)
+		return false;
+	if (memcmp(a->entries, b->entries,
+			   a->length * sizeof(ProvenanceEntry)) != 0)
+		return false;
+	return true;
+}
+
+static bool
 _equalBitmapset(const Bitmapset *a, const Bitmapset *b)
 {
 	return bms_equal(a, b);

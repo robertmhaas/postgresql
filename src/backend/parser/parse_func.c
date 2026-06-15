@@ -768,6 +768,7 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 		funcexpr->funcformat = funcformat;
 		/* funccollid and inputcollid will be set by parse_collate.c */
 		funcexpr->args = fargs;
+		funcexpr->pidx = 0;		/* direct parser input */
 		funcexpr->location = location;
 
 		retval = (Node *) funcexpr;
@@ -1769,7 +1770,8 @@ func_get_detail(List *funcname,
 			proargdefaults = SysCacheGetAttrNotNull(PROCOID, ftup,
 													Anum_pg_proc_proargdefaults);
 			str = TextDatumGetCString(proargdefaults);
-			defaults = castNode(List, stringToNode(str));
+			/* PROVENANCE-TODO: no provenances available?! */
+			defaults = castNode(List, stringToNode(str, -2));
 			pfree(str);
 
 			/* Delete any unused defaults from the returned list */
@@ -1943,9 +1945,6 @@ unify_hypothetical_args(ParseState *pstate,
  * allowed.
  *
  * Caution: given argument list is modified in-place.
- *
- * As with coerce_type, pstate may be NULL if no special unknown-Param
- * processing is wanted.
  */
 void
 make_fn_arguments(ParseState *pstate,
@@ -1955,6 +1954,10 @@ make_fn_arguments(ParseState *pstate,
 {
 	ListCell   *current_fargs;
 	int			i = 0;
+
+	/* Caller MUST provide a ParseState at least for provenance. */
+	Assert(pstate != NULL);
+	Assert(pstate->p_provenances != NULL);
 
 	foreach(current_fargs, fargs)
 	{

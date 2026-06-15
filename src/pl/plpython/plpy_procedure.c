@@ -194,6 +194,9 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, PLyTrigType is_trigger)
 		proc->fn_xmin = HeapTupleHeaderGetRawXmin(procTup->t_data);
 		proc->fn_tid = procTup->t_self;
 		proc->fn_readonly = (procStruct->provolatile != PROVOLATILE_VOLATILE);
+		proc->provenances =
+			InitProvenancesForCache(PROVENANCE_FUNCTION,
+									fn_oid, procStruct->proowner);
 		proc->is_setof = procStruct->proretset;
 		proc->is_procedure = (procStruct->prokind == PROKIND_PROCEDURE);
 		proc->is_trigger = is_trigger;

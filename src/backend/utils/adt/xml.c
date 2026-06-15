@@ -172,7 +172,8 @@ static void xmldata_root_element_start(StringInfo result, const char *eltname,
 static void xmldata_root_element_end(StringInfo result, const char *eltname);
 static StringInfo query_to_xml_internal(const char *query, char *tablename,
 										const char *xmlschema, bool nulls, bool tableforest,
-										const char *targetns, bool top_level);
+										const char *targetns, bool top_level,
+										Provenances *provenances);
 static const char *map_sql_table_to_xmlschema(TupleDesc tupdesc, Oid relid,
 											  bool nulls, bool tableforest, const char *targetns);
 static const char *map_sql_schema_to_xmlschema_types(Oid nspid,
@@ -2825,13 +2826,14 @@ _SPI_strdup(const char *s)
  * a list of Oids with the query results.
  */
 static List *
-query_to_oid_list(const char *query)
+query_to_oid_list(const char *query, Provenances *provenances)
 {
 	uint64		i;
 	List	   *list = NIL;
 	int			spi_result;
 
-	spi_result = SPI_execute(query, true, 0);
+	spi_result = SPI_execute(query, true, 0,
+							 provenances);
 	if (spi_result != SPI_OK_SELECT)
 		elog(ERROR, "SPI_execute returned %s for %s",
 			 SPI_result_code_string(spi_result), query);
@@ -2854,7 +2856,7 @@ query_to_oid_list(const char *query)
 
 
 static List *
-schema_get_xml_visible_tables(Oid nspid)
+schema_get_xml_visible_tables(Oid nspid, Provenances *provenances)
 {
 	StringInfoData query;
 
@@ -2867,7 +2869,7 @@ schema_get_xml_visible_tables(Oid nspid)
 					 " AND pg_catalog.has_table_privilege (oid, 'SELECT')"
 					 " ORDER BY relname;", nspid);
 
-	return query_to_oid_list(query.data);
+	return query_to_oid_list(query.data, provenances);
 }
 
 
@@ -2881,14 +2883,15 @@ schema_get_xml_visible_tables(Oid nspid)
 
 
 static List *
-database_get_xml_visible_schemas(void)
+database_get_xml_visible_schemas(Provenances *provenances)
 {
-	return query_to_oid_list(XML_VISIBLE_SCHEMAS " ORDER BY nspname;");
+	return query_to_oid_list(XML_VISIBLE_SCHEMAS " ORDER BY nspname;",
+							 provenances);
 }
 
 
 static List *
-database_get_xml_visible_tables(void)
+database_get_xml_visible_tables(Provenances *provenances)
 {
 	/* At the moment there is no order required here. */
 	return query_to_oid_list("SELECT oid FROM pg_catalog.pg_class"
@@ -2897,7 +2900,8 @@ database_get_xml_visible_tables(void)
 							 CppAsString2(RELKIND_MATVIEW) ","
 							 CppAsString2(RELKIND_VIEW) ")"
 							 " AND pg_catalog.has_table_privilege(pg_class.oid, 'SELECT')"
-							 " AND relnamespace IN (" XML_VISIBLE_SCHEMAS ");");
+							 " AND relnamespace IN (" XML_VISIBLE_SCHEMAS ");",
+							 provenances);
 }
 
 
@@ -2909,7 +2913,8 @@ database_get_xml_visible_tables(void)
 static StringInfo
 table_to_xml_internal(Oid relid,
 					  const char *xmlschema, bool nulls, bool tableforest,
-					  const char *targetns, bool top_level)
+					  const char *targetns, bool top_level,
+					  Provenances *provenances)
 {
 	StringInfoData query;
 
@@ -2919,7 +2924,7 @@ table_to_xml_internal(Oid relid,
 														 ObjectIdGetDatum(relid))));
 	return query_to_xml_internal(query.data, get_rel_name(relid),
 								 xmlschema, nulls, tableforest,
-								 targetns, top_level);
+								 targetns, top_level, provenances);
 }
 
 
@@ -2930,10 +2935,15 @@ table_to_xml(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 
-	PG_RETURN_XML_P(stringinfo_to_xmltype(table_to_xml_internal(relid, NULL,
-																nulls, tableforest,
-																targetns, true)));
+	PG_RETURN_XML_P(stringinfo_to_xmltype(table_to_xml_internal(relid,
+																NULL,
+																nulls,
+																tableforest,
+																targetns,
+																true,
+																provenances)));
 }
 
 
@@ -2944,10 +2954,16 @@ query_to_xml(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 
-	PG_RETURN_XML_P(stringinfo_to_xmltype(query_to_xml_internal(query, NULL,
-																NULL, nulls, tableforest,
-																targetns, true)));
+	PG_RETURN_XML_P(stringinfo_to_xmltype(query_to_xml_internal(query,
+																NULL,
+																NULL,
+																nulls,
+																tableforest,
+																targetns,
+																true,
+																provenances)));
 }
 
 
@@ -3042,7 +3058,8 @@ xmldata_root_element_end(StringInfo result, const char *eltname)
 static StringInfo
 query_to_xml_internal(const char *query, char *tablename,
 					  const char *xmlschema, bool nulls, bool tableforest,
-					  const char *targetns, bool top_level)
+					  const char *targetns, bool top_level,
+					  Provenances *provenances)
 {
 	StringInfo	result;
 	char	   *xmltn;
@@ -3056,7 +3073,7 @@ query_to_xml_internal(const char *query, char *tablename,
 	result = makeStringInfo();
 
 	SPI_connect();
-	if (SPI_execute(query, true, 0) != SPI_OK_SELECT)
+	if (SPI_execute(query, true, 0, provenances) != SPI_OK_SELECT)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
 				 errmsg("invalid query")));
@@ -3110,13 +3127,14 @@ query_to_xmlschema(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 	const char *result;
 	SPIPlanPtr	plan;
 	Portal		portal;
 
 	SPI_connect();
 
-	if ((plan = SPI_prepare(query, 0, NULL)) == NULL)
+	if ((plan = SPI_prepare(query, 0, NULL, provenances)) == NULL)
 		elog(ERROR, "SPI_prepare(\"%s\") failed", query);
 
 	if ((portal = SPI_cursor_open(NULL, plan, NULL, NULL, true)) == NULL)
@@ -3169,6 +3187,7 @@ table_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 	Relation	rel;
 	const char *xmlschema;
 
@@ -3178,8 +3197,12 @@ table_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 	table_close(rel, NoLock);
 
 	PG_RETURN_XML_P(stringinfo_to_xmltype(table_to_xml_internal(relid,
-																xmlschema, nulls, tableforest,
-																targetns, true)));
+																xmlschema,
+																nulls,
+																tableforest,
+																targetns,
+																true,
+																provenances)));
 }
 
 
@@ -3190,14 +3213,14 @@ query_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
-
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 	const char *xmlschema;
 	SPIPlanPtr	plan;
 	Portal		portal;
 
 	SPI_connect();
 
-	if ((plan = SPI_prepare(query, 0, NULL)) == NULL)
+	if ((plan = SPI_prepare(query, 0, NULL, provenances)) == NULL)
 		elog(ERROR, "SPI_prepare(\"%s\") failed", query);
 
 	if ((portal = SPI_cursor_open(NULL, plan, NULL, NULL, true)) == NULL)
@@ -3208,9 +3231,14 @@ query_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 	SPI_cursor_close(portal);
 	SPI_finish();
 
-	PG_RETURN_XML_P(stringinfo_to_xmltype(query_to_xml_internal(query, NULL,
-																xmlschema, nulls, tableforest,
-																targetns, true)));
+	PG_RETURN_XML_P(stringinfo_to_xmltype(query_to_xml_internal(query,
+																NULL,
+																xmlschema,
+																nulls,
+																tableforest,
+																targetns,
+																true,
+																provenances)));
 }
 
 
@@ -3221,7 +3249,8 @@ query_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 
 static StringInfo
 schema_to_xml_internal(Oid nspid, const char *xmlschema, bool nulls,
-					   bool tableforest, const char *targetns, bool top_level)
+					   bool tableforest, const char *targetns,
+					   bool top_level, Provenances *provenances)
 {
 	StringInfo	result;
 	char	   *xmlsn;
@@ -3240,7 +3269,7 @@ schema_to_xml_internal(Oid nspid, const char *xmlschema, bool nulls,
 
 	SPI_connect();
 
-	relid_list = schema_get_xml_visible_tables(nspid);
+	relid_list = schema_get_xml_visible_tables(nspid, provenances);
 
 	foreach(cell, relid_list)
 	{
@@ -3248,7 +3277,7 @@ schema_to_xml_internal(Oid nspid, const char *xmlschema, bool nulls,
 		StringInfo	subres;
 
 		subres = table_to_xml_internal(relid, NULL, nulls, tableforest,
-									   targetns, false);
+									   targetns, false, provenances);
 
 		appendBinaryStringInfo(result, subres->data, subres->len);
 		appendStringInfoChar(result, '\n');
@@ -3269,15 +3298,18 @@ schema_to_xml(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
-
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 	char	   *schemaname;
 	Oid			nspid;
+	StringInfo	result;
 
 	schemaname = NameStr(*name);
 	nspid = LookupExplicitNamespace(schemaname, false);
 
-	PG_RETURN_XML_P(stringinfo_to_xmltype(schema_to_xml_internal(nspid, NULL,
-																 nulls, tableforest, targetns, true)));
+	result = schema_to_xml_internal(nspid, NULL, nulls,
+									tableforest, targetns,
+									true, provenances);
+	PG_RETURN_XML_P(stringinfo_to_xmltype(result));
 }
 
 
@@ -3310,7 +3342,8 @@ xsd_schema_element_end(StringInfo result)
 
 static StringInfo
 schema_to_xmlschema_internal(const char *schemaname, bool nulls,
-							 bool tableforest, const char *targetns)
+							 bool tableforest, const char *targetns,
+							 Provenances *provenances)
 {
 	Oid			nspid;
 	List	   *relid_list;
@@ -3326,7 +3359,7 @@ schema_to_xmlschema_internal(const char *schemaname, bool nulls,
 
 	SPI_connect();
 
-	relid_list = schema_get_xml_visible_tables(nspid);
+	relid_list = schema_get_xml_visible_tables(nspid, provenances);
 
 	tupdesc_list = NIL;
 	foreach(cell, relid_list)
@@ -3360,9 +3393,13 @@ schema_to_xmlschema(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
+	StringInfo	result;
 
-	PG_RETURN_XML_P(stringinfo_to_xmltype(schema_to_xmlschema_internal(NameStr(*name),
-																	   nulls, tableforest, targetns)));
+	result = schema_to_xmlschema_internal(NameStr(*name), nulls,
+										  tableforest, targetns,
+										  provenances);
+	PG_RETURN_XML_P(stringinfo_to_xmltype(result));
 }
 
 
@@ -3373,19 +3410,23 @@ schema_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(1);
 	bool		tableforest = PG_GETARG_BOOL(2);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 	char	   *schemaname;
 	Oid			nspid;
 	StringInfo	xmlschema;
+	StringInfo	result;
 
 	schemaname = NameStr(*name);
 	nspid = LookupExplicitNamespace(schemaname, false);
 
 	xmlschema = schema_to_xmlschema_internal(schemaname, nulls,
-											 tableforest, targetns);
-
-	PG_RETURN_XML_P(stringinfo_to_xmltype(schema_to_xml_internal(nspid,
-																 xmlschema->data, nulls,
-																 tableforest, targetns, true)));
+											 tableforest, targetns,
+											 provenances);
+	result = schema_to_xml_internal(nspid, xmlschema->data,
+									nulls, tableforest,
+									targetns, true,
+									provenances);
+	PG_RETURN_XML_P(stringinfo_to_xmltype(result));
 }
 
 
@@ -3396,7 +3437,8 @@ schema_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 
 static StringInfo
 database_to_xml_internal(const char *xmlschema, bool nulls,
-						 bool tableforest, const char *targetns)
+						 bool tableforest, const char *targetns,
+						 Provenances *provenances)
 {
 	StringInfo	result;
 	List	   *nspid_list;
@@ -3415,7 +3457,7 @@ database_to_xml_internal(const char *xmlschema, bool nulls,
 
 	SPI_connect();
 
-	nspid_list = database_get_xml_visible_schemas();
+	nspid_list = database_get_xml_visible_schemas(provenances);
 
 	foreach(cell, nspid_list)
 	{
@@ -3423,7 +3465,8 @@ database_to_xml_internal(const char *xmlschema, bool nulls,
 		StringInfo	subres;
 
 		subres = schema_to_xml_internal(nspid, NULL, nulls,
-										tableforest, targetns, false);
+										tableforest, targetns, false,
+										provenances);
 
 		appendBinaryStringInfo(result, subres->data, subres->len);
 		appendStringInfoChar(result, '\n');
@@ -3443,15 +3486,19 @@ database_to_xml(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(0);
 	bool		tableforest = PG_GETARG_BOOL(1);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
+	StringInfo	result;
 
-	PG_RETURN_XML_P(stringinfo_to_xmltype(database_to_xml_internal(NULL, nulls,
-																   tableforest, targetns)));
+	result = database_to_xml_internal(NULL, nulls, tableforest,
+									  targetns, provenances);
+	PG_RETURN_XML_P(stringinfo_to_xmltype(result));
 }
 
 
 static StringInfo
 database_to_xmlschema_internal(bool nulls, bool tableforest,
-							   const char *targetns)
+							   const char *targetns,
+							   Provenances *provenances)
 {
 	List	   *relid_list;
 	List	   *nspid_list;
@@ -3465,8 +3512,8 @@ database_to_xmlschema_internal(bool nulls, bool tableforest,
 
 	SPI_connect();
 
-	relid_list = database_get_xml_visible_tables();
-	nspid_list = database_get_xml_visible_schemas();
+	relid_list = database_get_xml_visible_tables(provenances);
+	nspid_list = database_get_xml_visible_schemas(provenances);
 
 	tupdesc_list = NIL;
 	foreach(cell, relid_list)
@@ -3498,9 +3545,12 @@ database_to_xmlschema(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(0);
 	bool		tableforest = PG_GETARG_BOOL(1);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
+	StringInfo	result;
 
-	PG_RETURN_XML_P(stringinfo_to_xmltype(database_to_xmlschema_internal(nulls,
-																		 tableforest, targetns)));
+	result = database_to_xmlschema_internal(nulls, tableforest,
+											targetns, provenances);
+	PG_RETURN_XML_P(stringinfo_to_xmltype(result));
 }
 
 
@@ -3510,12 +3560,16 @@ database_to_xml_and_xmlschema(PG_FUNCTION_ARGS)
 	bool		nulls = PG_GETARG_BOOL(0);
 	bool		tableforest = PG_GETARG_BOOL(1);
 	const char *targetns = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	Provenances *provenances = InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner);
 	StringInfo	xmlschema;
+	StringInfo	result;
 
-	xmlschema = database_to_xmlschema_internal(nulls, tableforest, targetns);
-
-	PG_RETURN_XML_P(stringinfo_to_xmltype(database_to_xml_internal(xmlschema->data,
-																   nulls, tableforest, targetns)));
+	xmlschema = database_to_xmlschema_internal(nulls, tableforest,
+											   targetns, provenances);
+	result = database_to_xml_internal(xmlschema->data, nulls,
+									  tableforest, targetns,
+									  provenances);
+	PG_RETURN_XML_P(stringinfo_to_xmltype(result));
 }
 
 

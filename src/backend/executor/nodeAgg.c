@@ -447,7 +447,8 @@ static void build_pertrans_for_aggref(AggStatePerTrans pertrans,
 									  Oid aggtranstype, Oid aggserialfn,
 									  Oid aggdeserialfn, Datum initValue,
 									  bool initValueIsNull, Oid *inputTypes,
-									  int numArguments);
+									  int numArguments,
+									  ProvenanceIndex agg_pidx);
 
 
 /*
@@ -3764,6 +3765,7 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		Oid			aggOwner;
 		Expr	   *finalfnexpr;
 		Oid			aggtranstype;
+		ProvenanceIndex agg_pidx;
 
 		/* Planner should have assigned aggregate to correct level */
 		Assert(aggref->agglevelsup == 0);
@@ -3778,6 +3780,12 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 
 		peragg->aggref = aggref;
 		peragg->transno = aggref->aggtransno;
+
+		/* Extend provenance chain for aggregate's pg_proc entry. */
+		agg_pidx = ProvenanceForFunction(estate->es_provenances,
+										 aggref->aggfnoid,
+										 get_func_owner(aggref->aggfnoid),
+										 aggref->pidx);
 
 		/* Fetch the pg_aggregate row */
 		aggTuple = SearchSysCache1(AGGFNOID,
@@ -3915,7 +3923,8 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 										 aggref->aggtype,
 										 aggref->inputcollid,
 										 finalfn_oid,
-										 &finalfnexpr);
+										 &finalfnexpr,
+										 agg_pidx);
 			fmgr_info(finalfn_oid, &peragg->finalfn);
 			fmgr_info_set_expr((Node *) finalfnexpr, &peragg->finalfn);
 		}
@@ -3988,7 +3997,7 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 										  aggref, transfn_oid, aggtranstype,
 										  serialfn_oid, deserialfn_oid,
 										  initValue, initValueIsNull,
-										  combineFnInputTypes, 2);
+										  combineFnInputTypes, 2, agg_pidx);
 
 				/*
 				 * Ensure that a combine function to combine INTERNAL states
@@ -4015,7 +4024,7 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 										  serialfn_oid, deserialfn_oid,
 										  initValue, initValueIsNull,
 										  aggTransFnInputTypes,
-										  numAggTransFnArgs);
+										  numAggTransFnArgs, agg_pidx);
 
 				/*
 				 * If the transfn is strict and the initval is NULL, make sure
@@ -4134,7 +4143,8 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 						  Oid transfn_oid, Oid aggtranstype,
 						  Oid aggserialfn, Oid aggdeserialfn,
 						  Datum initValue, bool initValueIsNull,
-						  Oid *inputTypes, int numArguments)
+						  Oid *inputTypes, int numArguments,
+						  ProvenanceIndex agg_pidx)
 {
 	int			numGroupingSets = Max(aggstate->maxsets, 1);
 	Expr	   *transfnexpr;
@@ -4183,7 +4193,8 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 								 transfn_oid,
 								 InvalidOid,
 								 &transfnexpr,
-								 NULL);
+								 NULL,
+								 agg_pidx);
 
 	fmgr_info(transfn_oid, &pertrans->transfn);
 	fmgr_info_set_expr((Node *) transfnexpr, &pertrans->transfn);
@@ -4204,7 +4215,8 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 	if (OidIsValid(aggserialfn))
 	{
 		build_aggregate_serialfn_expr(aggserialfn,
-									  &serialfnexpr);
+									  &serialfnexpr,
+									  agg_pidx);
 		fmgr_info(aggserialfn, &pertrans->serialfn);
 		fmgr_info_set_expr((Node *) serialfnexpr, &pertrans->serialfn);
 
@@ -4220,7 +4232,8 @@ build_pertrans_for_aggref(AggStatePerTrans pertrans,
 	if (OidIsValid(aggdeserialfn))
 	{
 		build_aggregate_deserialfn_expr(aggdeserialfn,
-										&deserialfnexpr);
+										&deserialfnexpr,
+										agg_pidx);
 		fmgr_info(aggdeserialfn, &pertrans->deserialfn);
 		fmgr_info_set_expr((Node *) deserialfnexpr, &pertrans->deserialfn);
 

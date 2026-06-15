@@ -860,6 +860,9 @@ create_estate_for_relation(Relation rel)
 
 	estate->es_output_cid = GetCurrentCommandId(false);
 
+	/* pgoutput worker toplevel */
+	estate->es_provenances = InitProvenancesForSession();
+
 	return estate;
 }
 
@@ -919,12 +922,27 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 						 RelationSyncEntry *entry)
 {
 	ListCell   *lc;
-	List	   *rfnodes[] = {NIL, NIL, NIL};	/* One per pubaction */
+	char	  **rfnodes;
+	bool	   *rfactions;
 	bool		no_filter[] = {false, false, false};	/* One per pubaction */
 	MemoryContext oldctx;
-	int			idx;
 	bool		has_filter = true;
 	Oid			schemaid = get_rel_namespace(entry->publish_as_relid);
+	int			num_publications = list_length(publications);
+
+	/*
+	 * rfnodes is an array of prqual values, indexed by position within the
+	 * publications array. NULL is stored for quals that we don't actually
+	 * need.
+	 *
+	 * rfactions is an array of Boolean flags. For a given index i into the
+	 * publications array and a given publication action p, the array element
+	 * at index i * NUM_ROWFILTER_PUBACTIONS + p indicates whether that
+	 * publication action is relevant for that publication.
+	 */
+	rfnodes = palloc0_array(char *, num_publications);
+	rfactions =
+		palloc0_array(bool, num_publications * NUM_ROWFILTER_PUBACTIONS);
 
 	/*
 	 * Find if there are any row filters for this relation. If there are, then
@@ -932,11 +950,6 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 	 * build an expression state, we need to ensure the following:
 	 *
 	 * All the given publication-table mappings must be checked.
-	 *
-	 * Multiple publications might have multiple row filters for this
-	 * relation. Since row filter usage depends on the DML operation, there
-	 * are multiple lists (one for each operation) to which row filters will
-	 * be appended.
 	 *
 	 * FOR ALL TABLES and FOR TABLES IN SCHEMA implies "don't use row filter
 	 * expression" so it takes precedence.
@@ -947,6 +960,9 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 		HeapTuple	rftuple = NULL;
 		Datum		rfdatum = 0;
 		bool		pub_no_filter = true;
+		int			pubidx = foreach_current_index(lc);
+		bool		needs_prqual = false;
+		bool	   *rfpubactions;
 
 		/*
 		 * If the publication is FOR ALL TABLES, or the publication includes a
@@ -1001,60 +1017,115 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 		}
 
 		/* Form the per pubaction row filter lists. */
+		rfpubactions = rfactions + pubidx * NUM_ROWFILTER_PUBACTIONS;
 		if (pub->pubactions.pubinsert && !no_filter[PUBACTION_INSERT])
-			rfnodes[PUBACTION_INSERT] = lappend(rfnodes[PUBACTION_INSERT],
-												TextDatumGetCString(rfdatum));
+		{
+			needs_prqual = true;
+			rfpubactions[PUBACTION_INSERT] = true;
+		}
 		if (pub->pubactions.pubupdate && !no_filter[PUBACTION_UPDATE])
-			rfnodes[PUBACTION_UPDATE] = lappend(rfnodes[PUBACTION_UPDATE],
-												TextDatumGetCString(rfdatum));
+		{
+			needs_prqual = true;
+			rfpubactions[PUBACTION_UPDATE] = true;
+		}
 		if (pub->pubactions.pubdelete && !no_filter[PUBACTION_DELETE])
-			rfnodes[PUBACTION_DELETE] = lappend(rfnodes[PUBACTION_DELETE],
-												TextDatumGetCString(rfdatum));
+		{
+			needs_prqual = true;
+			rfpubactions[PUBACTION_DELETE] = true;
+		}
+		if (needs_prqual)
+			rfnodes[pubidx] = TextDatumGetCString(rfdatum);
 
 		ReleaseSysCache(rftuple);
 	}							/* loop all subscribed publications */
 
-	/* Clean the row filter */
-	for (idx = 0; idx < NUM_ROWFILTER_PUBACTIONS; idx++)
-	{
-		if (no_filter[idx])
-		{
-			list_free_deep(rfnodes[idx]);
-			rfnodes[idx] = NIL;
-		}
-	}
-
 	if (has_filter)
 	{
 		Relation	relation = RelationIdGetRelation(entry->publish_as_relid);
+		List	   *filters[NUM_ROWFILTER_PUBACTIONS] = {NIL, NIL, NIL};
+		Provenances *provenances;
 
 		pgoutput_ensure_entry_cxt(data, entry);
 
-		/*
-		 * Now all the filters for all pubactions are known. Combine them when
-		 * their pubactions are the same.
-		 */
 		oldctx = MemoryContextSwitchTo(entry->entry_cxt);
 		entry->estate = create_estate_for_relation(relation);
-		for (idx = 0; idx < NUM_ROWFILTER_PUBACTIONS; idx++)
-		{
-			List	   *filters = NIL;
-			Expr	   *rfnode;
+		provenances = entry->estate->es_provenances;
 
-			if (rfnodes[idx] == NIL)
+		/*
+		 * Build node trees for each required prqual and add it to the lists
+		 * that need it.
+		 */
+		foreach(lc, publications)
+		{
+			Publication *pub = lfirst(lc);
+			bool	   *rfpubactions;
+			Node	   *rfexpr;
+			int			pubidx = foreach_current_index(lc);
+			bool		needs_prqual = false;
+			ProvenanceIndex pidx;
+
+			/* Skip if no prqual or already known to be unneeded. */
+			if (rfnodes[pubidx] == NULL)
 				continue;
 
-			foreach(lc, rfnodes[idx])
-				filters = lappend(filters, expand_generated_columns_in_expr(stringToNode((char *) lfirst(lc)), relation, 1));
+			/*
+			 * Even if rfnodes[pubidx] is non-NULL, it's still possible that
+			 * after looking at a later publication, the loop above set
+			 * no_filter[idx] for every pubaction to which it applies. In that
+			 * case, we don't need it after all.
+			 */
+			rfpubactions = rfactions + pubidx * NUM_ROWFILTER_PUBACTIONS;
+			for (int idx = 0; idx < NUM_ROWFILTER_PUBACTIONS; idx++)
+			{
+				if (rfpubactions[idx] && !no_filter[idx])
+				{
+					needs_prqual = true;
+					break;
+				}
+			}
+			if (!needs_prqual)
+				continue;
 
-			/* combine the row filter and cache the ExprState */
-			rfnode = make_orclause(filters);
+			/* Build node-tree representation. */
+			pidx = ProvenanceForPublication(provenances,
+											pub->oid, pub->owner, 0);
+			rfexpr = stringToNode(rfnodes[pubidx], pidx);
+			rfexpr = expand_generated_columns_in_expr(rfexpr,
+													  relation,
+													  1,
+													  provenances);
+
+			/* Append to the appropriate lists. */
+			for (int idx = 0; idx < NUM_ROWFILTER_PUBACTIONS; idx++)
+			{
+				if (rfpubactions[idx] && !no_filter[idx])
+					filters[idx] = lappend(filters[idx], rfexpr);
+			}
+		}
+
+		for (int idx = 0; idx < NUM_ROWFILTER_PUBACTIONS; idx++)
+		{
+			Expr	   *rfnode;
+
+			if (filters[idx] == NIL)
+				continue;
+
+			rfnode = make_orclause(filters[idx]);
 			entry->exprstate[idx] = ExecPrepareExpr(rfnode, entry->estate);
-		}						/* for each pubaction */
+		}
 		MemoryContextSwitchTo(oldctx);
 
 		RelationClose(relation);
 	}
+
+	/* Release memory. */
+	for (int pubidx = 0; pubidx < num_publications; ++pubidx)
+	{
+		if (rfnodes[pubidx] != NULL)
+			pfree(rfnodes[pubidx]);
+	}
+	pfree(rfnodes);
+	pfree(rfactions);
 }
 
 /*

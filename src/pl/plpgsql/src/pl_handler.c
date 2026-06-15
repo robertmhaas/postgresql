@@ -330,7 +330,8 @@ plpgsql_inline_handler(PG_FUNCTION_ARGS)
 	SPI_connect_ext(codeblock->atomic ? 0 : SPI_OPT_NONATOMIC);
 
 	/* Compile the anonymous code block */
-	func = plpgsql_compile_inline(codeblock->source_text);
+	func = plpgsql_compile_inline(codeblock->source_text,
+								  codeblock->provenances);
 
 	/* Mark the function as busy, just pro forma */
 	func->cfunc.use_count++;

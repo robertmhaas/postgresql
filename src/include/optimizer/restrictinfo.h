@@ -43,7 +43,9 @@ extern RestrictInfo *make_restrictinfo(PlannerInfo *root,
 									   Relids required_relids,
 									   Relids incompatible_relids,
 									   Relids outer_relids);
-extern RestrictInfo *commute_restrictinfo(RestrictInfo *rinfo, Oid comm_op);
+extern RestrictInfo *commute_restrictinfo(RestrictInfo *rinfo, Oid comm_op,
+										  Oid comm_op_owner,
+										  Provenances *provenances);
 extern bool restriction_is_or_clause(RestrictInfo *restrictinfo);
 extern bool restriction_is_securely_promotable(RestrictInfo *restrictinfo,
 											   RelOptInfo *rel);

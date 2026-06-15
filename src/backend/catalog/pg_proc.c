@@ -550,7 +550,11 @@ ProcedureCreate(const char *procedureName,
 
 			proargdefaults = SysCacheGetAttrNotNull(PROCNAMEARGSNSP, oldtup,
 													Anum_pg_proc_proargdefaults);
-			oldDefaults = castNode(List, stringToNode(TextDatumGetCString(proargdefaults)));
+
+			oldDefaults =
+				castNode(List,
+						 stringToNode(TextDatumGetCString(proargdefaults),
+									  PI_NEVER_EXECUTED));
 			Assert(list_length(oldDefaults) == oldproc->pronargdefaults);
 
 			/* new list can have more defaults than old, advance over 'em */
@@ -929,8 +933,12 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 		{
 			Node	   *n;
 			List	   *stored_query_list;
+			Provenances *provenances;
 
-			n = stringToNode(TextDatumGetCString(tmp));
+			provenances = InitProvenancesForCache(PROVENANCE_FUNCTION,
+												  funcoid, proc->proowner);
+
+			n = stringToNode(TextDatumGetCString(tmp), 0);
 			if (IsA(n, List))
 				stored_query_list = linitial(castNode(List, n));
 			else
@@ -949,7 +957,8 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 				 * that context.
 				 */
 				AcquireRewriteLocks(parsetree, true, false);
-				querytree_sublist = pg_rewrite_query(parsetree);
+				querytree_sublist = pg_rewrite_query(parsetree,
+													 provenances);
 				querytree_list = lappend(querytree_list, querytree_sublist);
 			}
 		}
@@ -982,12 +991,19 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 				{
 					RawStmt    *parsetree = lfirst_node(RawStmt, lc);
 					List	   *querytree_sublist;
+					Provenances *provenances;
 
-					querytree_sublist = pg_analyze_and_rewrite_withcb(parsetree,
-																	  prosrc,
-																	  (ParserSetupHook) sql_fn_parser_setup,
-																	  pinfo,
-																	  NULL);
+					provenances =
+						InitProvenancesForCache(PROVENANCE_FUNCTION,
+												proc->oid,
+												proc->proowner);
+					querytree_sublist =
+						pg_analyze_and_rewrite_withcb(parsetree,
+													  prosrc,
+													  (ParserSetupHook) sql_fn_parser_setup,
+													  pinfo,
+													  NULL,
+													  provenances);
 					querytree_list = lappend(querytree_list,
 											 querytree_sublist);
 				}

@@ -29,6 +29,7 @@
 #include "tsearch/ts_utils.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "nodes/provenance.h"
 #include "utils/regproc.h"
 #include "utils/rel.h"
 
@@ -2546,7 +2547,8 @@ ts_process_call(FuncCallContext *funcctx)
 }
 
 static TSVectorStat *
-ts_stat_sql(MemoryContext persistentContext, text *txt, text *ws)
+ts_stat_sql(MemoryContext persistentContext, text *txt, text *ws,
+			Provenances *provenances)
 {
 	char	   *query = text_to_cstring(txt);
 	TSVectorStat *stat;
@@ -2554,7 +2556,7 @@ ts_stat_sql(MemoryContext persistentContext, text *txt, text *ws)
 	Portal		portal;
 	SPIPlanPtr	plan;
 
-	if ((plan = SPI_prepare(query, 0, NULL)) == NULL)
+	if ((plan = SPI_prepare(query, 0, NULL, provenances)) == NULL)
 		/* internal error */
 		elog(ERROR, "SPI_prepare(\"%s\") failed", query);
 
@@ -2651,7 +2653,8 @@ ts_stat1(PG_FUNCTION_ARGS)
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		SPI_connect();
-		stat = ts_stat_sql(funcctx->multi_call_memory_ctx, txt, NULL);
+		stat = ts_stat_sql(funcctx->multi_call_memory_ctx, txt, NULL,
+						   InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 		PG_FREE_IF_COPY(txt, 0);
 		ts_setup_firstcall(fcinfo, funcctx, stat);
 		SPI_finish();
@@ -2677,7 +2680,8 @@ ts_stat2(PG_FUNCTION_ARGS)
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		SPI_connect();
-		stat = ts_stat_sql(funcctx->multi_call_memory_ctx, txt, ws);
+		stat = ts_stat_sql(funcctx->multi_call_memory_ctx, txt, ws,
+						   InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 		PG_FREE_IF_COPY(txt, 0);
 		PG_FREE_IF_COPY(ws, 1);
 		ts_setup_firstcall(fcinfo, funcctx, stat);

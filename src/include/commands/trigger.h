@@ -156,12 +156,14 @@ extern PGDLLIMPORT int SessionReplicationRole;
 extern ObjectAddress CreateTrigger(const CreateTrigStmt *stmt, const char *queryString,
 								   Oid relOid, Oid refRelOid, Oid constraintOid, Oid indexOid,
 								   Oid funcoid, Oid parentTriggerOid, Node *whenClause,
-								   bool isInternal, bool in_partition);
+								   bool isInternal, bool in_partition,
+								   Provenances *provenances);
 extern ObjectAddress CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 										   Oid relOid, Oid refRelOid, Oid constraintOid,
 										   Oid indexOid, Oid funcoid, Oid parentTriggerOid,
 										   Node *whenClause, bool isInternal, bool in_partition,
-										   char trigger_fires_when);
+										   char trigger_fires_when,
+										   Provenances *provenances);
 
 extern void TriggerSetParentTrigger(Relation trigRel,
 									Oid childTrigId,

@@ -25,4 +25,9 @@ tests += {
       'pg_overexplain',
     ],
   },
+  'tap': {
+    'tests': [
+      't/001_provenance.pl',
+    ],
+  },
 }

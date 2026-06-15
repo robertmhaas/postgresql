@@ -182,6 +182,7 @@ ExecSerializePlan(Plan *plan, EState *estate)
 	pstmt->commandType = CMD_SELECT;
 	pstmt->queryId = pgstat_get_my_query_id();
 	pstmt->planId = pgstat_get_my_plan_id();
+	pstmt->provenances = estate->es_plannedstmt->provenances;
 	pstmt->hasReturning = false;
 	pstmt->hasModifyingCTE = false;
 	pstmt->canSetTag = true;
@@ -1337,7 +1338,7 @@ ExecParallelGetQueryDesc(shm_toc *toc, DestReceiver *receiver,
 
 	/* Reconstruct leader-supplied PlannedStmt. */
 	pstmtspace = shm_toc_lookup(toc, PARALLEL_KEY_PLANNEDSTMT, false);
-	pstmt = (PlannedStmt *) stringToNode(pstmtspace);
+	pstmt = (PlannedStmt *) stringToNode(pstmtspace, -1);
 
 	/* Reconstruct ParamListInfo. */
 	paramspace = shm_toc_lookup(toc, PARALLEL_KEY_PARAMLISTINFO, false);

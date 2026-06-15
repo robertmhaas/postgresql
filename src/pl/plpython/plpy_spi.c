@@ -119,7 +119,8 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 		}
 
 		pg_verifymbstr(query, strlen(query), false);
-		plan->plan = SPI_prepare(query, plan->nargs, plan->types);
+		plan->plan = SPI_prepare(query, plan->nargs, plan->types,
+								 exec_ctx->curr_proc->provenances);
 		if (plan->plan == NULL)
 			elog(ERROR, "SPI_prepare failed: %s",
 				 SPI_result_code_string(SPI_result));
@@ -310,7 +311,8 @@ PLy_spi_execute_query(char *query, long limit)
 		PLyExecutionContext *exec_ctx = PLy_current_execution_context();
 
 		pg_verifymbstr(query, strlen(query), false);
-		rv = SPI_execute(query, exec_ctx->curr_proc->fn_readonly, limit);
+		rv = SPI_execute(query, exec_ctx->curr_proc->fn_readonly, limit,
+						 exec_ctx->curr_proc->provenances);
 		ret = PLy_spi_execute_fetch_result(SPI_tuptable, SPI_processed, rv);
 
 		PLy_spi_subtransaction_commit(oldcontext, oldowner);

@@ -265,6 +265,9 @@ typedef struct PlannerGlobal
 	/* partition descriptors */
 	PartitionDirectory partition_directory pg_node_attr(read_write_ignore);
 
+	/* accumulated provenances from all sub-Queries */
+	Provenances *provenances;
+
 	/* hash table for NOT NULL attnums of relations */
 	struct HTAB *rel_notnullatts_hash pg_node_attr(read_write_ignore);
 
@@ -1208,6 +1211,10 @@ typedef struct RelOptInfo
 	/*
 	 * These arrays are of length partkey->partnatts, which we don't have at
 	 * hand, so don't try to print
+	 *
+	 * If we ever wanted to evaluate these expressions, we would need to store
+	 * provenance information here -- but these are only compared against
+	 * other expressions, not evaluated.
 	 */
 
 	/* Non-nullable partition key expressions */
@@ -1405,6 +1412,11 @@ typedef struct IndexOptInfo
 	List	   *indexprs pg_node_attr(read_write_ignore);
 	/* predicate if a partial index, else NIL */
 	List	   *indpred;
+
+	/* provenances for indexprs expressions (set in get_relation_info) */
+	Provenances *indexprs_provenances;
+	/* provenances for indpred expressions (set in get_relation_info) */
+	Provenances *indpred_provenances;
 
 	/* targetlist representing index columns */
 	List	   *indextlist;

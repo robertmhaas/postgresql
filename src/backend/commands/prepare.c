@@ -90,7 +90,8 @@ PrepareQuery(ParseState *pstate, PrepareStmt *stmt,
 	 * to see the unmodified raw parse tree.
 	 */
 	plansource = CreateCachedPlan(rawstmt, pstate->p_sourcetext,
-								  CreateCommandTag(stmt->query));
+								  CreateCommandTag(stmt->query),
+								  pstate->p_provenances);
 
 	/* Transform list of TypeNames to array of type OIDs */
 	nargs = list_length(stmt->argtypes);
@@ -118,8 +119,11 @@ PrepareQuery(ParseState *pstate, PrepareStmt *stmt,
 	 * information about unknown parameters to be deduced from context.
 	 * Rewrite the query. The result could be 0, 1, or many queries.
 	 */
-	query_list = pg_analyze_and_rewrite_varparams(rawstmt, pstate->p_sourcetext,
-												  &argtypes, &nargs, NULL);
+	query_list = pg_analyze_and_rewrite_varparams(rawstmt,
+												  pstate->p_sourcetext,
+												  &argtypes, &nargs,
+												  NULL,
+												  pstate->p_provenances);
 
 	/* Finish filling in the CachedPlanSource */
 	CompleteCachedPlan(plansource,
@@ -130,7 +134,8 @@ PrepareQuery(ParseState *pstate, PrepareStmt *stmt,
 					   NULL,
 					   NULL,
 					   CURSOR_OPT_PARALLEL_OK,	/* allow parallel mode */
-					   true);	/* fixed result */
+					   true,	/* fixed result */
+					   pstate->p_provenances);
 
 	/*
 	 * Save the results.
@@ -342,6 +347,9 @@ EvaluateParams(ParseState *pstate, PreparedStatement *pstmt, List *params,
 		lfirst(l) = expr;
 		i++;
 	}
+
+	/* Separate parse-time provenances from execution-time provenances. */
+	estate->es_provenances = copyObject(pstate->p_provenances);
 
 	/* Prepare the expressions for execution */
 	exprstates = ExecPrepareExprList(params, estate);
@@ -618,6 +626,7 @@ ExplainExecuteQuery(ExecuteStmt *execstmt, IntoClause *into, ExplainState *es,
 
 		pstate_params = make_parsestate(NULL);
 		pstate_params->p_sourcetext = pstate->p_sourcetext;
+		pstate_params->p_provenances = pstate->p_provenances;
 
 		/*
 		 * Need an EState to evaluate parameters; must not delete it till end

@@ -194,7 +194,8 @@ extern bytea *spgoptions(Datum reloptions, bool validate);
 
 /* spginsert.c */
 extern IndexBuildResult *spgbuild(Relation heap, Relation index,
-								  struct IndexInfo *indexInfo);
+								  struct IndexInfo *indexInfo,
+								  struct Provenances *provenances);
 extern void spgbuildempty(Relation index);
 extern bool spginsert(Relation index, Datum *values, bool *isnull,
 					  ItemPointer ht_ctid, Relation heapRel,

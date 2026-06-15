@@ -1273,6 +1273,7 @@ GetPublication(Oid pubid)
 
 	pub = palloc_object(Publication);
 	pub->oid = pubid;
+	pub->owner = pubform->pubowner;
 	pub->name = pstrdup(NameStr(pubform->pubname));
 	pub->alltables = pubform->puballtables;
 	pub->allsequences = pubform->puballsequences;

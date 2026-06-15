@@ -70,6 +70,16 @@ test_rls_hooks_permissive(CmdType cmdtype, Relation relation)
 	policy->roles = construct_array_builtin(&role, 1, OIDOID);
 
 	/*
+	 * Since everyone must trust code written in C, we attribute this policy
+	 * to the bootstrap superuser. This policy has no OID, but it's OK to use
+	 * InvalidOid.
+	 */
+	policy->provenances = InitProvenancesForCache(PROVENANCE_POLICY,
+												  InvalidOid,
+												  BOOTSTRAP_SUPERUSERID);
+	qual_pstate->p_provenances = policy->provenances;
+
+	/*
 	 * policy->qual = (Expr *) makeConst(BOOLOID, -1, InvalidOid,
 	 * sizeof(bool), BoolGetDatum(true), false, true);
 	 */
@@ -136,6 +146,16 @@ test_rls_hooks_restrictive(CmdType cmdtype, Relation relation)
 	policy->policy_name = pstrdup("extension policy");
 	policy->polcmd = '*';
 	policy->roles = construct_array_builtin(&role, 1, OIDOID);
+
+	/*
+	 * Since everyone must trust code written in C, we attribute this policy
+	 * to the bootstrap superuser. This policy has no OID, but it's OK to use
+	 * InvalidOid.
+	 */
+	policy->provenances = InitProvenancesForCache(PROVENANCE_POLICY,
+												  InvalidOid,
+												  BOOTSTRAP_SUPERUSERID);
+	qual_pstate->p_provenances = policy->provenances;
 
 	n = makeFuncCall(list_make2(makeString("pg_catalog"),
 								makeString("current_user")),

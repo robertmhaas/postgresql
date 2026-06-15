@@ -22,6 +22,7 @@
 #include "catalog/pg_subscription_d.h"	/* IWYU pragma: export */
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
+#include "nodes/provenance.h"
 
 /* ----------------
  *		pg_subscription definition. cpp turns this into
@@ -171,6 +172,7 @@ typedef struct Subscription
 	List	   *publications;	/* List of publication names to subscribe to */
 	char	   *origin;			/* Only publish data originating from the
 								 * specified origin */
+	Provenances *provenances;	/* provenance root for this subscription */
 } Subscription;
 
 #ifdef EXPOSE_TO_CLIENT_CODE

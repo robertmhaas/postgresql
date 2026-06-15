@@ -190,11 +190,15 @@ typedef struct IndexInfo
 
 	/* expr trees for expression entries, or NIL if none */
 	List	   *ii_Expressions; /* list of Expr */
+	/* provenances for the expression entries */
+	Provenances *ii_ExpressionProvenances;
 	/* exec state for expressions, or NIL if none */
 	List	   *ii_ExpressionsState;	/* list of ExprState */
 
 	/* partial-index predicate, or NIL if none */
 	List	   *ii_Predicate;	/* list of Expr */
+	/* provenances for the partial-index predicates */
+	Provenances *ii_PredicateProvenances;
 	/* exec state for expressions, or NIL if none */
 	ExprState  *ii_PredicateState;
 
@@ -704,6 +708,7 @@ typedef struct EState
 								 * ExecRowMarks, or NULL if none */
 	List	   *es_rteperminfos;	/* List of RTEPermissionInfo */
 	PlannedStmt *es_plannedstmt;	/* link to top of plan tree */
+	Provenances *es_provenances;	/* provenance list for expressions */
 	List	   *es_part_prune_infos;	/* List of PartitionPruneInfo */
 	List	   *es_part_prune_states;	/* List of PartitionPruneState */
 	List	   *es_part_prune_results;	/* List of Bitmapset */
@@ -1093,6 +1098,7 @@ typedef struct DomainConstraintState
 	DomainConstraintType constrainttype;	/* constraint type */
 	char	   *name;			/* name of constraint (for error msgs) */
 	Expr	   *check_expr;		/* for CHECK, a boolean expression */
+	Provenances *check_provenances; /* for CHECK, provenances for expr */
 	ExprState  *check_exprstate;	/* check_expr's eval state, or NULL */
 } DomainConstraintState;
 

@@ -479,7 +479,8 @@ expand_insert_targetlist(PlannerInfo *root, List *tlist, Relation rel)
 												 att_tup->attbyval);
 				/* Must run expression preprocessing on any non-const nodes */
 				if (!IsA(new_expr, Const))
-					new_expr = eval_const_expressions(root, new_expr);
+					new_expr = eval_const_expressions(root, new_expr,
+													  root->glob->provenances);
 			}
 
 			new_tle = makeTargetEntry((Expr *) new_expr,

@@ -15,7 +15,9 @@
 #define REWRITEGRAPHTABLE_H
 
 #include "nodes/parsenodes.h"
+#include "nodes/provenance.h"
 
-extern Query *rewriteGraphTable(Query *parsetree, int rt_index);
+extern Query *rewriteGraphTable(Query *parsetree, int rt_index,
+								Provenances *provenances);
 
 #endif							/* REWRITEGRAPHTABLE_H */

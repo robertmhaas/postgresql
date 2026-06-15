@@ -34,6 +34,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/multibitmapset.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "nodes/subscripting.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/clauses.h"
@@ -68,6 +69,7 @@ typedef struct
 {
 	ParamListInfo boundParams;
 	PlannerInfo *root;
+	Provenances *provenances;
 	List	   *active_fns;
 	Node	   *case_val;
 	bool		estimate;
@@ -129,31 +131,37 @@ static List *simplify_or_arguments(List *args,
 static List *simplify_and_arguments(List *args,
 									eval_const_expressions_context *context,
 									bool *haveNull, bool *forceFalse);
-static Node *simplify_boolean_equality(Oid opno, List *args);
+static Node *simplify_boolean_equality(Oid opno, List *args,
+									   Provenances *provenances);
 static Expr *simplify_function(Oid funcid,
 							   Oid result_type, int32 result_typmod,
 							   Oid result_collid, Oid input_collid, List **args_p,
 							   bool funcvariadic, bool process_args, bool allow_non_const,
+							   ProvenanceIndex pidx,
 							   eval_const_expressions_context *context);
 static Node *simplify_aggref(Aggref *aggref,
 							 eval_const_expressions_context *context);
 static List *reorder_function_arguments(List *args, int pronargs,
-										HeapTuple func_tuple);
+										HeapTuple func_tuple,
+										Provenances *provenances);
 static List *add_function_defaults(List *args, int pronargs,
-								   HeapTuple func_tuple);
-static List *fetch_function_defaults(HeapTuple func_tuple);
+								   HeapTuple func_tuple,
+								   Provenances *provenances);
+static List *fetch_function_defaults(HeapTuple func_tuple,
+									 Provenances *provenances);
 static void recheck_cast_function_args(List *args, Oid result_type,
 									   Oid *proargtypes, int pronargs,
-									   HeapTuple func_tuple);
+									   HeapTuple func_tuple,
+									   Provenances *provenances);
 static Expr *evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 							   Oid result_collid, Oid input_collid, List *args,
 							   bool funcvariadic,
-							   HeapTuple func_tuple,
+							   HeapTuple func_tuple, ProvenanceIndex pidx,
 							   eval_const_expressions_context *context);
 static Expr *inline_function(Oid funcid, Oid result_type, Oid result_collid,
 							 Oid input_collid, List *args,
 							 bool funcvariadic,
-							 HeapTuple func_tuple,
+							 HeapTuple func_tuple, ProvenanceIndex pidx,
 							 eval_const_expressions_context *context);
 static Node *substitute_actual_parameters(Node *expr, int nargs, List *args,
 										  int *usecounts);
@@ -500,10 +508,16 @@ contain_mutable_functions_walker(Node *node, void *context)
  * particular input type we're dealing with.
  */
 bool
-contain_mutable_functions_after_planning(Expr *expr)
+contain_mutable_functions_after_planning(Expr *expr, Provenances *provenances)
 {
-	/* We assume here that expression_planner() won't scribble on its input */
-	expr = expression_planner(expr);
+	/*
+	 * We assume here that expression_planner() won't scribble on the
+	 * expression tree, but it may discover new provenances. Since
+	 * contain_mutable_functions() doesn't execute anything and expr is not
+	 * returned, we don't need those new provenances for anything. To avoid
+	 * polluting the caller's provenances object, we copy and then discard it.
+	 */
+	expr = expression_planner(expr, copyObject(provenances));
 
 	/* Now we can search for non-immutable functions */
 	return contain_mutable_functions((Node *) expr);
@@ -669,10 +683,17 @@ contain_volatile_functions_walker(Node *node, void *context)
  * particular input type we're dealing with.
  */
 bool
-contain_volatile_functions_after_planning(Expr *expr)
+contain_volatile_functions_after_planning(Expr *expr,
+										  Provenances *provenances)
 {
-	/* We assume here that expression_planner() won't scribble on its input */
-	expr = expression_planner(expr);
+	/*
+	 * We assume here that expression_planner() won't scribble on the
+	 * expression tree, but it may discover new provenances. Since
+	 * contain_volatile_functions() doesn't execute anything and expr is not
+	 * returned, we don't need those new provenances for anything. To avoid
+	 * polluting the caller's provenances object, we copy and then discard it.
+	 */
+	expr = expression_planner(expr, copyObject(provenances));
 
 	/* Now we can search for volatile functions */
 	return contain_volatile_functions((Node *) expr);
@@ -2389,10 +2410,11 @@ NumRelids(PlannerInfo *root, Node *clause)
  * XXX the clause is destructively modified!
  */
 void
-CommuteOpExpr(OpExpr *clause)
+CommuteOpExpr(OpExpr *clause, Provenances *provenances)
 {
 	Oid			opoid;
 	Node	   *temp;
+	Oid			op_owner;
 
 	/* Sanity checks: caller is at fault if these fail */
 	if (!is_opclause(clause) ||
@@ -2400,6 +2422,7 @@ CommuteOpExpr(OpExpr *clause)
 		elog(ERROR, "cannot commute non-binary-operator clause");
 
 	opoid = get_commutator(clause->opno);
+	op_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
 
 	if (!OidIsValid(opoid))
 		elog(ERROR, "could not find commutator for operator %u",
@@ -2411,6 +2434,10 @@ CommuteOpExpr(OpExpr *clause)
 	clause->opno = opoid;
 	clause->opfuncid = InvalidOid;
 	/* opresulttype, opretset, opcollid, inputcollid need not change */
+	clause->pidx = ProvenanceForOperator(provenances,
+										 clause->opno,
+										 op_owner,
+										 clause->pidx);
 
 	temp = linitial(clause->args);
 	linitial(clause->args) = lsecond(clause->args);
@@ -2497,15 +2524,19 @@ rowtype_field_matches(Oid rowtypeid, int fieldnum,
  *--------------------
  */
 Node *
-eval_const_expressions(PlannerInfo *root, Node *node)
+eval_const_expressions(PlannerInfo *root, Node *node,
+					   Provenances *provenances)
 {
 	eval_const_expressions_context context;
+
+	Assert(provenances != NULL);
 
 	if (root)
 		context.boundParams = root->glob->boundParams;	/* bound Params */
 	else
 		context.boundParams = NULL;
 	context.root = root;		/* for inlined-function dependencies */
+	context.provenances = provenances;
 	context.active_fns = NIL;	/* nothing being recursively simplified */
 	context.case_val = NULL;	/* no CASE being examined */
 	context.estimate = false;	/* safe transformations only */
@@ -2641,13 +2672,15 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
  *--------------------
  */
 Node *
-estimate_expression_value(PlannerInfo *root, Node *node)
+estimate_expression_value(PlannerInfo *root, Node *node,
+						  Provenances *provenances)
 {
 	eval_const_expressions_context context;
 
 	context.boundParams = root->glob->boundParams;	/* bound Params */
 	/* we do not need to mark the plan as depending on inlined functions */
 	context.root = NULL;
+	context.provenances = provenances;
 	context.active_fns = NIL;	/* nothing being recursively simplified */
 	context.case_val = NULL;	/* no CASE being examined */
 	context.estimate = true;	/* unsafe transformations OK */
@@ -2676,11 +2709,12 @@ estimate_expression_value(PlannerInfo *root, Node *node)
 	(!expression_tree_walker((Node *) (node), contain_non_const_walker, NULL))
 
 /* Generic macro for applying evaluate_expr */
-#define ece_evaluate_expr(node) \
+#define ece_evaluate_expr(node, context) \
 	((Node *) evaluate_expr((Expr *) (node), \
 							exprType((Node *) (node)), \
 							exprTypmod((Node *) (node)), \
-							exprCollation((Node *) (node))))
+							exprCollation((Node *) (node)), \
+							(context)->provenances))
 
 /*
  * Recursive guts of eval_const_expressions/estimate_expression_value
@@ -2793,7 +2827,8 @@ eval_const_expressions_mutator(Node *node,
 
 				args = expand_function_arguments(expr->args,
 												 false, expr->wintype,
-												 func_tuple);
+												 func_tuple,
+												 context->provenances);
 
 				ReleaseSysCache(func_tuple);
 
@@ -2820,6 +2855,7 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->winstar = expr->winstar;
 				newexpr->winagg = expr->winagg;
 				newexpr->ignore_nulls = expr->ignore_nulls;
+				newexpr->pidx = expr->pidx;
 				newexpr->location = expr->location;
 
 				return (Node *) newexpr;
@@ -2847,6 +2883,7 @@ eval_const_expressions_mutator(Node *node,
 										   expr->funcvariadic,
 										   true,
 										   true,
+										   expr->pidx,
 										   context);
 				if (simple)		/* successfully simplified it */
 					return (Node *) simple;
@@ -2866,6 +2903,7 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->funccollid = expr->funccollid;
 				newexpr->inputcollid = expr->inputcollid;
 				newexpr->args = args;
+				newexpr->pidx = expr->pidx;
 				newexpr->location = expr->location;
 				return (Node *) newexpr;
 			}
@@ -2891,6 +2929,7 @@ eval_const_expressions_mutator(Node *node,
 				 * Code for op/func reduction is pretty bulky, so split it out
 				 * as a separate function.
 				 */
+				/* PROVENANCE-TODO: add OpExpr to provenance chain */
 				simple = simplify_function(expr->opfuncid,
 										   expr->opresulttype, -1,
 										   expr->opcollid,
@@ -2899,6 +2938,7 @@ eval_const_expressions_mutator(Node *node,
 										   false,
 										   true,
 										   true,
+										   expr->pidx,
 										   context);
 				if (simple)		/* successfully simplified it */
 					return (Node *) simple;
@@ -2912,7 +2952,8 @@ eval_const_expressions_mutator(Node *node,
 					expr->opno == BooleanNotEqualOperator)
 				{
 					simple = (Expr *) simplify_boolean_equality(expr->opno,
-																args);
+																args,
+																context->provenances);
 					if (simple) /* successfully simplified it */
 						return (Node *) simple;
 				}
@@ -2930,6 +2971,7 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->opcollid = expr->opcollid;
 				newexpr->inputcollid = expr->inputcollid;
 				newexpr->args = args;
+				newexpr->pidx = expr->pidx;
 				newexpr->location = expr->location;
 				return (Node *) newexpr;
 			}
@@ -3010,6 +3052,7 @@ eval_const_expressions_mutator(Node *node,
 					 * Code for op/func reduction is pretty bulky, so split it
 					 * out as a separate function.
 					 */
+					/* PROVENANCE-TODO: add something to provenance chain */
 					simple = simplify_function(expr->opfuncid,
 											   expr->opresulttype, -1,
 											   expr->opcollid,
@@ -3018,6 +3061,7 @@ eval_const_expressions_mutator(Node *node,
 											   false,
 											   false,
 											   false,
+											   expr->pidx,
 											   context);
 					if (simple) /* successfully simplified it */
 					{
@@ -3070,8 +3114,10 @@ eval_const_expressions_mutator(Node *node,
 					eqexpr->inputcollid = expr->inputcollid;
 					eqexpr->args = args;
 					eqexpr->location = expr->location;
+					eqexpr->pidx = expr->pidx;
 
-					return eval_const_expressions_mutator(negate_clause((Node *) eqexpr),
+					return eval_const_expressions_mutator(negate_clause((Node *) eqexpr,
+																		context->provenances),
 														  context);
 				}
 				else if (has_null_input)
@@ -3113,6 +3159,7 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->inputcollid = expr->inputcollid;
 				newexpr->args = args;
 				newexpr->location = expr->location;
+				newexpr->pidx = expr->pidx;
 				return (Node *) newexpr;
 			}
 		case T_NullIfExpr:
@@ -3141,7 +3188,7 @@ eval_const_expressions_mutator(Node *node,
 
 				if (!has_nonconst_input &&
 					ece_function_is_safe(expr->opfuncid, context))
-					return ece_evaluate_expr(expr);
+					return ece_evaluate_expr(expr, context);
 
 				return (Node *) expr;
 			}
@@ -3161,7 +3208,7 @@ eval_const_expressions_mutator(Node *node,
 				 */
 				if (ece_all_arguments_const(saop) &&
 					ece_function_is_safe(saop->opfuncid, context))
-					return ece_evaluate_expr(saop);
+					return ece_evaluate_expr(saop, context);
 				return (Node *) saop;
 			}
 		case T_BoolExpr:
@@ -3238,7 +3285,8 @@ eval_const_expressions_mutator(Node *node,
 							 * Use negate_clause() to see if we can simplify
 							 * away the NOT.
 							 */
-							return negate_clause(arg);
+							return negate_clause(arg,
+												 context->provenances);
 						}
 					default:
 						elog(ERROR, "unrecognized boolop: %d",
@@ -3340,6 +3388,7 @@ eval_const_expressions_mutator(Node *node,
 				getTypeInputInfo(expr->resulttype,
 								 &infunc, &intypioparam);
 
+				/* PROVENANCE-TODO: add output type to provenance chain */
 				simple = simplify_function(outfunc,
 										   CSTRINGOID, -1,
 										   InvalidOid,
@@ -3348,6 +3397,7 @@ eval_const_expressions_mutator(Node *node,
 										   false,
 										   true,
 										   true,
+										   expr->pidx,
 										   context);
 				if (simple)		/* successfully simplified output fn */
 				{
@@ -3372,6 +3422,7 @@ eval_const_expressions_mutator(Node *node,
 												false,
 												true));
 
+					/* PROVENANCE-TODO: add input type to provenance chain */
 					simple = simplify_function(infunc,
 											   expr->resulttype, -1,
 											   expr->resultcollid,
@@ -3380,6 +3431,7 @@ eval_const_expressions_mutator(Node *node,
 											   false,
 											   false,
 											   true,
+											   expr->pidx,
 											   context);
 					if (simple) /* successfully simplified input fn */
 						return (Node *) simple;
@@ -3395,6 +3447,7 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->resulttype = expr->resulttype;
 				newexpr->resultcollid = expr->resultcollid;
 				newexpr->coerceformat = expr->coerceformat;
+				newexpr->pidx = expr->pidx;
 				newexpr->location = expr->location;
 				return (Node *) newexpr;
 			}
@@ -3437,7 +3490,7 @@ eval_const_expressions_mutator(Node *node,
 				if (ac->arg && IsA(ac->arg, Const) &&
 					ac->elemexpr && !IsA(ac->elemexpr, CoerceToDomain) &&
 					!contain_mutable_functions((Node *) ac->elemexpr))
-					return ece_evaluate_expr(ac);
+					return ece_evaluate_expr(ac, context);
 
 				return (Node *) ac;
 			}
@@ -3633,7 +3686,7 @@ eval_const_expressions_mutator(Node *node,
 				node = ece_generic_processing(node);
 				/* If all arguments are Consts, we can fold to a constant */
 				if (ece_all_arguments_const(node))
-					return ece_evaluate_expr(node);
+					return ece_evaluate_expr(node, context);
 				return node;
 			}
 		case T_CoalesceExpr:
@@ -3716,7 +3769,8 @@ eval_const_expressions_mutator(Node *node,
 					return (Node *) evaluate_expr((Expr *) svf,
 												  svf->type,
 												  svf->typmod,
-												  InvalidOid);
+												  InvalidOid,
+												  context->provenances);
 				else
 					return copyObject((Node *) svf);
 			}
@@ -3813,7 +3867,7 @@ eval_const_expressions_mutator(Node *node,
 											  newfselect->resulttype,
 											  newfselect->resulttypmod,
 											  newfselect->resultcollid))
-						return ece_evaluate_expr(newfselect);
+						return ece_evaluate_expr(newfselect, context);
 				}
 				return (Node *) newfselect;
 			}
@@ -4143,7 +4197,7 @@ eval_const_expressions_mutator(Node *node,
 				newcre->arg = (Expr *) arg;
 
 				if (arg != NULL && IsA(arg, Const))
-					return ece_evaluate_expr((Node *) newcre);
+					return ece_evaluate_expr((Node *) newcre, context);
 				return (Node *) newcre;
 			}
 		default:
@@ -4424,7 +4478,7 @@ simplify_and_arguments(List *args,
  * see two constant inputs, nor a constant-NULL input.
  */
 static Node *
-simplify_boolean_equality(Oid opno, List *args)
+simplify_boolean_equality(Oid opno, List *args, Provenances *provenances)
 {
 	Node	   *leftop;
 	Node	   *rightop;
@@ -4440,12 +4494,12 @@ simplify_boolean_equality(Oid opno, List *args)
 			if (DatumGetBool(((Const *) leftop)->constvalue))
 				return rightop; /* true = foo */
 			else
-				return negate_clause(rightop);	/* false = foo */
+				return negate_clause(rightop, provenances); /* false = foo */
 		}
 		else
 		{
 			if (DatumGetBool(((Const *) leftop)->constvalue))
-				return negate_clause(rightop);	/* true <> foo */
+				return negate_clause(rightop, provenances); /* true <> foo */
 			else
 				return rightop; /* false <> foo */
 		}
@@ -4458,12 +4512,12 @@ simplify_boolean_equality(Oid opno, List *args)
 			if (DatumGetBool(((Const *) rightop)->constvalue))
 				return leftop;	/* foo = true */
 			else
-				return negate_clause(leftop);	/* foo = false */
+				return negate_clause(leftop, provenances);	/* foo = false */
 		}
 		else
 		{
 			if (DatumGetBool(((Const *) rightop)->constvalue))
-				return negate_clause(leftop);	/* foo <> true */
+				return negate_clause(leftop, provenances);	/* foo <> true */
 			else
 				return leftop;	/* foo <> false */
 		}
@@ -4496,6 +4550,7 @@ static Expr *
 simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 				  Oid result_collid, Oid input_collid, List **args_p,
 				  bool funcvariadic, bool process_args, bool allow_non_const,
+				  ProvenanceIndex pidx,
 				  eval_const_expressions_context *context)
 {
 	List	   *args = *args_p;
@@ -4528,7 +4583,8 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 	 */
 	if (process_args)
 	{
-		args = expand_function_arguments(args, false, result_type, func_tuple);
+		args = expand_function_arguments(args, false, result_type, func_tuple,
+										 context->provenances);
 		args = (List *) expression_tree_mutator((Node *) args,
 												eval_const_expressions_mutator,
 												context);
@@ -4541,7 +4597,7 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 	newexpr = evaluate_function(funcid, result_type, result_typmod,
 								result_collid, input_collid,
 								args, funcvariadic,
-								func_tuple, context);
+								func_tuple, pidx, context);
 
 	if (!newexpr && allow_non_const && OidIsValid(func_form->prosupport))
 	{
@@ -4581,7 +4637,7 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 	if (!newexpr && allow_non_const)
 		newexpr = inline_function(funcid, result_type, result_collid,
 								  input_collid, args, funcvariadic,
-								  func_tuple, context);
+								  func_tuple, pidx, context);
 
 	ReleaseSysCache(func_tuple);
 
@@ -4928,7 +4984,8 @@ expr_is_nonnullable(PlannerInfo *root, Expr *expr, NotNullSource source)
  */
 List *
 expand_function_arguments(List *args, bool include_out_arguments,
-						  Oid result_type, HeapTuple func_tuple)
+						  Oid result_type, HeapTuple func_tuple,
+						  Provenances *provenances)
 {
 	Form_pg_proc funcform = (Form_pg_proc) GETSTRUCT(func_tuple);
 	Oid		   *proargtypes = funcform->proargtypes.values;
@@ -4982,20 +5039,21 @@ expand_function_arguments(List *args, bool include_out_arguments,
 	/* If so, we must apply reorder_function_arguments */
 	if (has_named_args)
 	{
-		args = reorder_function_arguments(args, pronargs, func_tuple);
+		args = reorder_function_arguments(args, pronargs,
+										  func_tuple, provenances);
 		/* Recheck argument types and add casts if needed */
 		recheck_cast_function_args(args, result_type,
 								   proargtypes, pronargs,
-								   func_tuple);
+								   func_tuple, provenances);
 	}
 	else if (list_length(args) < pronargs)
 	{
 		/* No named args, but we seem to be short some defaults */
-		args = add_function_defaults(args, pronargs, func_tuple);
+		args = add_function_defaults(args, pronargs, func_tuple, provenances);
 		/* Recheck argument types and add casts if needed */
 		recheck_cast_function_args(args, result_type,
 								   proargtypes, pronargs,
-								   func_tuple);
+								   func_tuple, provenances);
 	}
 
 	return args;
@@ -5008,7 +5066,8 @@ expand_function_arguments(List *args, bool include_out_arguments,
  * impossible to form a truly valid positional call without that.
  */
 static List *
-reorder_function_arguments(List *args, int pronargs, HeapTuple func_tuple)
+reorder_function_arguments(List *args, int pronargs, HeapTuple func_tuple,
+						   Provenances *provenances)
 {
 	Form_pg_proc funcform = (Form_pg_proc) GETSTRUCT(func_tuple);
 	int			nargsprovided = list_length(args);
@@ -5049,8 +5108,9 @@ reorder_function_arguments(List *args, int pronargs, HeapTuple func_tuple)
 	 */
 	if (nargsprovided < pronargs)
 	{
-		List	   *defaults = fetch_function_defaults(func_tuple);
+		List	   *defaults;
 
+		defaults = fetch_function_defaults(func_tuple, provenances);
 		i = pronargs - funcform->pronargdefaults;
 		foreach(lc, defaults)
 		{
@@ -5078,14 +5138,15 @@ reorder_function_arguments(List *args, int pronargs, HeapTuple func_tuple)
  * and so we know we just need to add defaults at the end.
  */
 static List *
-add_function_defaults(List *args, int pronargs, HeapTuple func_tuple)
+add_function_defaults(List *args, int pronargs, HeapTuple func_tuple,
+					  Provenances *provenances)
 {
 	int			nargsprovided = list_length(args);
 	List	   *defaults;
 	int			ndelete;
 
 	/* Get all the default expressions from the pg_proc tuple */
-	defaults = fetch_function_defaults(func_tuple);
+	defaults = fetch_function_defaults(func_tuple, provenances);
 
 	/* Delete any unused defaults from the list */
 	ndelete = nargsprovided + list_length(defaults) - pronargs;
@@ -5102,16 +5163,20 @@ add_function_defaults(List *args, int pronargs, HeapTuple func_tuple)
  * fetch_function_defaults: get function's default arguments as expression list
  */
 static List *
-fetch_function_defaults(HeapTuple func_tuple)
+fetch_function_defaults(HeapTuple func_tuple, Provenances *provenances)
 {
 	List	   *defaults;
 	Datum		proargdefaults;
 	char	   *str;
+	ProvenanceIndex pidx;
+	Form_pg_proc func_form = (Form_pg_proc) GETSTRUCT(func_tuple);
 
+	pidx = ProvenanceForFunction(provenances, func_form->oid,
+								 func_form->proowner, 0);
 	proargdefaults = SysCacheGetAttrNotNull(PROCOID, func_tuple,
 											Anum_pg_proc_proargdefaults);
 	str = TextDatumGetCString(proargdefaults);
-	defaults = castNode(List, stringToNode(str));
+	defaults = castNode(List, stringToNode(str, pidx));
 	pfree(str);
 	return defaults;
 }
@@ -5134,7 +5199,7 @@ fetch_function_defaults(HeapTuple func_tuple)
 static void
 recheck_cast_function_args(List *args, Oid result_type,
 						   Oid *proargtypes, int pronargs,
-						   HeapTuple func_tuple)
+						   HeapTuple func_tuple, Provenances *provenances)
 {
 	Form_pg_proc funcform = (Form_pg_proc) GETSTRUCT(func_tuple);
 	int			nargs;
@@ -5142,6 +5207,7 @@ recheck_cast_function_args(List *args, Oid result_type,
 	Oid			declared_arg_types[FUNC_MAX_ARGS];
 	Oid			rettype;
 	ListCell   *lc;
+	ParseState *pstate;
 
 	if (list_length(args) > FUNC_MAX_ARGS)
 		elog(ERROR, "too many function arguments");
@@ -5162,7 +5228,10 @@ recheck_cast_function_args(List *args, Oid result_type,
 		elog(ERROR, "function's resolved result type changed during planning");
 
 	/* perform any necessary typecasting of arguments */
-	make_fn_arguments(NULL, args, actual_arg_types, declared_arg_types);
+	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
+	make_fn_arguments(pstate, args, actual_arg_types, declared_arg_types);
+	free_parsestate(pstate);
 }
 
 /*
@@ -5180,7 +5249,7 @@ static Expr *
 evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 				  Oid result_collid, Oid input_collid, List *args,
 				  bool funcvariadic,
-				  HeapTuple func_tuple,
+				  HeapTuple func_tuple, ProvenanceIndex pidx,
 				  eval_const_expressions_context *context)
 {
 	Form_pg_proc funcform = (Form_pg_proc) GETSTRUCT(func_tuple);
@@ -5265,10 +5334,11 @@ evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 	newexpr->funccollid = result_collid;	/* doesn't matter */
 	newexpr->inputcollid = input_collid;
 	newexpr->args = args;
+	newexpr->pidx = pidx;
 	newexpr->location = -1;
 
 	return evaluate_expr((Expr *) newexpr, result_type, result_typmod,
-						 result_collid);
+						 result_collid, context->provenances);
 }
 
 /*
@@ -5306,7 +5376,7 @@ static Expr *
 inline_function(Oid funcid, Oid result_type, Oid result_collid,
 				Oid input_collid, List *args,
 				bool funcvariadic,
-				HeapTuple func_tuple,
+				HeapTuple func_tuple, ProvenanceIndex pidx,
 				eval_const_expressions_context *context)
 {
 	Form_pg_proc funcform = (Form_pg_proc) GETSTRUCT(func_tuple);
@@ -5377,6 +5447,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	fexpr->funccollid = result_collid;	/* doesn't matter */
 	fexpr->inputcollid = input_collid;
 	fexpr->args = args;
+	fexpr->pidx = pidx;
 	fexpr->location = -1;
 
 	/* Fetch the function body */
@@ -5395,6 +5466,10 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	sqlerrcontext.previous = error_context_stack;
 	error_context_stack = &sqlerrcontext;
 
+	/* Add the inlined function to the caller's provenances. */
+	pidx = ProvenanceForFunction(context->provenances, funcid,
+								 funcform->proowner, pidx);
+
 	/* If we have prosqlbody, pay attention to that not prosrc */
 	tmp = SysCacheGetAttr(PROCOID,
 						  func_tuple,
@@ -5405,7 +5480,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 		Node	   *n;
 		List	   *query_list;
 
-		n = stringToNode(TextDatumGetCString(tmp));
+		n = stringToNode(TextDatumGetCString(tmp), pidx);
 		if (IsA(n, List))
 			query_list = linitial_node(List, castNode(List, n));
 		else
@@ -5422,6 +5497,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	}
 	else
 	{
+		/* PROVENANCE-TODO: do something with pidx here */
 		/* Set up to handle parameters while parsing the function body. */
 		pinfo = prepare_sql_fn_parse_info(func_tuple,
 										  (Node *) fexpr,
@@ -5439,6 +5515,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 
 		pstate = make_parsestate(NULL);
 		pstate->p_sourcetext = src;
+		pstate->p_provenances = context->provenances;
 		sql_fn_parser_setup(pstate, pinfo);
 
 		querytree = transformTopLevelStmt(pstate, linitial(raw_parsetree_list));
@@ -5725,7 +5802,7 @@ sql_inline_error_callback(void *arg)
  */
 Expr *
 evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
-			  Oid result_collation)
+			  Oid result_collation, Provenances *provenances)
 {
 	EState	   *estate;
 	ExprState  *exprstate;
@@ -5739,6 +5816,7 @@ evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 	 * To use the executor, we need an EState.
 	 */
 	estate = CreateExecutorState();
+	estate->es_provenances = provenances;
 
 	/* We can use the estate's working context to avoid memory leaks. */
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
@@ -6033,6 +6111,8 @@ inline_sql_function_in_from(PlannerInfo *root,
 	Query	   *querytree;
 	TypeFuncClass functypclass;
 	TupleDesc	rettupdesc;
+	Provenances *provenances;
+	ProvenanceIndex pidx;
 
 	/*
 	 * The function must be declared to return a set, else inlining would
@@ -6062,6 +6142,14 @@ inline_sql_function_in_from(PlannerInfo *root,
 		list_length(fexpr->args) != funcform->pronargs)
 		return NULL;
 
+	/*
+	 * Record the function's provenance in the global list, and use that for
+	 * rewriting the function body.
+	 */
+	provenances = root->glob->provenances;
+	pidx = ProvenanceForFunction(provenances, funcform->oid,
+								 funcform->proowner, 0);
+
 	/* If we have prosqlbody, pay attention to that not prosrc */
 	sqlbody = SysCacheGetAttr(PROCOID,
 							  func_tuple,
@@ -6071,7 +6159,7 @@ inline_sql_function_in_from(PlannerInfo *root,
 	{
 		Node	   *n;
 
-		n = stringToNode(TextDatumGetCString(sqlbody));
+		n = stringToNode(TextDatumGetCString(sqlbody), pidx);
 		if (IsA(n, List))
 			querytree_list = linitial_node(List, castNode(List, n));
 		else
@@ -6082,7 +6170,7 @@ inline_sql_function_in_from(PlannerInfo *root,
 
 		/* Acquire necessary locks, then apply rewriter. */
 		AcquireRewriteLocks(querytree, true, false);
-		querytree_list = pg_rewrite_query(querytree);
+		querytree_list = pg_rewrite_query(querytree, provenances);
 		if (list_length(querytree_list) != 1)
 			return NULL;
 		querytree = linitial(querytree_list);
@@ -6113,7 +6201,8 @@ inline_sql_function_in_from(PlannerInfo *root,
 		querytree_list = pg_analyze_and_rewrite_withcb(linitial(raw_parsetree_list),
 													   src,
 													   (ParserSetupHook) sql_fn_parser_setup,
-													   pinfo, NULL);
+													   pinfo, NULL,
+													   provenances);
 		if (list_length(querytree_list) != 1)
 			return NULL;
 		querytree = linitial(querytree_list);

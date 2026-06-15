@@ -33,6 +33,7 @@
 
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
 
@@ -70,7 +71,7 @@ static Expr *process_duplicate_ors(List *orlist);
  * the same transformations.
  */
 Node *
-negate_clause(Node *node)
+negate_clause(Node *node, Provenances *provenances)
 {
 	if (node == NULL)			/* should not happen */
 		elog(ERROR, "can't negate an empty subexpression");
@@ -98,7 +99,9 @@ negate_clause(Node *node)
 				if (negator)
 				{
 					OpExpr	   *newopexpr = makeNode(OpExpr);
+					Oid			negator_owner;
 
+					negator_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
 					newopexpr->opno = negator;
 					newopexpr->opfuncid = InvalidOid;
 					newopexpr->opresulttype = opexpr->opresulttype;
@@ -107,6 +110,10 @@ negate_clause(Node *node)
 					newopexpr->inputcollid = opexpr->inputcollid;
 					newopexpr->args = opexpr->args;
 					newopexpr->location = opexpr->location;
+					newopexpr->pidx = ProvenanceForOperator(provenances,
+															negator,
+															negator_owner,
+															opexpr->pidx);
 					return (Node *) newopexpr;
 				}
 			}
@@ -123,7 +130,9 @@ negate_clause(Node *node)
 				if (negator)
 				{
 					ScalarArrayOpExpr *newopexpr = makeNode(ScalarArrayOpExpr);
+					Oid			negator_owner;
 
+					negator_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
 					newopexpr->opno = negator;
 					newopexpr->opfuncid = InvalidOid;
 					newopexpr->hashfuncid = InvalidOid;
@@ -132,6 +141,10 @@ negate_clause(Node *node)
 					newopexpr->inputcollid = saopexpr->inputcollid;
 					newopexpr->args = saopexpr->args;
 					newopexpr->location = saopexpr->location;
+					newopexpr->pidx = ProvenanceForOperator(provenances,
+															negator,
+															negator_owner,
+															saopexpr->pidx);
 					return (Node *) newopexpr;
 				}
 			}
@@ -165,7 +178,7 @@ negate_clause(Node *node)
 							foreach(lc, expr->args)
 							{
 								nargs = lappend(nargs,
-												negate_clause(lfirst(lc)));
+												negate_clause(lfirst(lc), provenances));
 							}
 							return (Node *) make_orclause(nargs);
 						}
@@ -178,7 +191,7 @@ negate_clause(Node *node)
 							foreach(lc, expr->args)
 							{
 								nargs = lappend(nargs,
-												negate_clause(lfirst(lc)));
+												negate_clause(lfirst(lc), provenances));
 							}
 							return (Node *) make_andclause(nargs);
 						}

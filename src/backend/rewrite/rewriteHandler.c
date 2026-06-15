@@ -30,6 +30,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "parser/analyze.h"
 #include "parser/parse_coerce.h"
@@ -63,6 +64,7 @@ typedef struct fireRIRonSubLink_context
 {
 	List	   *activeRIRs;
 	bool		hasRowSecurity;
+	Provenances *provenances;
 } fireRIRonSubLink_context;
 
 static bool acquireLocksOnSubLinks(Node *node,
@@ -72,7 +74,9 @@ static Query *rewriteRuleAction(Query *parsetree,
 								Node *rule_qual,
 								int rt_index,
 								CmdType event,
-								bool *returning_flag);
+								bool *returning_flag,
+								ProvenanceIndex poffset,
+								Provenances *provenances);
 static List *adjustJoinTreeList(Query *parsetree, bool removert, int rt_index);
 static List *rewriteTargetListIU(List *targetList,
 								 CmdType commandType,
@@ -80,7 +84,8 @@ static List *rewriteTargetListIU(List *targetList,
 								 Relation target_relation,
 								 RangeTblEntry *values_rte,
 								 int values_rte_index,
-								 Bitmapset **unused_values_attrnos);
+								 Bitmapset **unused_values_attrnos,
+								 Provenances *provenances);
 static TargetEntry *process_matched_tle(TargetEntry *src_tle,
 										TargetEntry *prior_tle,
 										const char *attrName);
@@ -88,16 +93,20 @@ static Node *get_assignment_input(Node *node);
 static Bitmapset *findDefaultOnlyColumns(RangeTblEntry *rte);
 static bool rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
 							 Relation target_relation,
-							 Bitmapset *unused_cols);
+							 Bitmapset *unused_cols,
+							 Provenances *provenances);
 static void rewriteValuesRTEToNulls(Query *parsetree, RangeTblEntry *rte);
 static void markQueryForLocking(Query *qry, Node *jtnode,
 								LockClauseStrength strength, LockWaitPolicy waitPolicy,
 								bool pushedDown);
 static List *matchLocks(CmdType event, Relation relation,
 						int varno, Query *parsetree, bool *hasUpdate);
-static Query *fireRIRrules(Query *parsetree, List *activeRIRs);
+static Query *fireRIRrules(Query *parsetree, List *activeRIRs,
+						   Provenances *provenances);
 static Bitmapset *adjust_view_column_set(Bitmapset *cols, List *targetlist);
-static List *get_generated_columns(Relation rel, int rt_index, bool include_stored);
+static List *get_generated_columns(Relation rel, int rt_index,
+								   bool include_stored,
+								   Provenances *provenances);
 
 
 /*
@@ -354,7 +363,9 @@ rewriteRuleAction(Query *parsetree,
 				  Node *rule_qual,
 				  int rt_index,
 				  CmdType event,
-				  bool *returning_flag)
+				  bool *returning_flag,
+				  ProvenanceIndex poffset,
+				  Provenances *provenances)
 {
 	int			current_varno,
 				new_varno;
@@ -367,11 +378,14 @@ rewriteRuleAction(Query *parsetree,
 	context.for_execute = true;
 
 	/*
-	 * Make modifiable copies of rule action and qual (what we're passed are
-	 * the stored versions in the relcache; don't touch 'em!).
+	 * Make modifiable copies of rule action and qual, then adjust provenance
+	 * indexes.  (What we're passed are the stored versions in the relcache;
+	 * don't touch 'em!)
 	 */
 	rule_action = copyObject(rule_action);
+	OffsetProvenances((Node *) rule_action, poffset);
 	rule_qual = copyObject(rule_qual);
+	OffsetProvenances(rule_qual, poffset);
 
 	/*
 	 * Acquire necessary locks and fix any deleted JOIN RTE entries.
@@ -651,7 +665,8 @@ rewriteRuleAction(Query *parsetree,
 		 * for them here, so that new.gen_col can be rewritten correctly.
 		 */
 		new_rel = relation_open(new_rte->relid, NoLock);
-		gen_cols = get_generated_columns(new_rel, new_varno, true);
+		gen_cols = get_generated_columns(new_rel, new_varno, true,
+										 provenances);
 		relation_close(new_rel, NoLock);
 
 		/*
@@ -826,7 +841,8 @@ rewriteTargetListIU(List *targetList,
 					Relation target_relation,
 					RangeTblEntry *values_rte,
 					int values_rte_index,
-					Bitmapset **unused_values_attrnos)
+					Bitmapset **unused_values_attrnos,
+					Provenances *provenances)
 {
 	TargetEntry **new_tles;
 	List	   *new_tlist = NIL;
@@ -1049,7 +1065,8 @@ rewriteTargetListIU(List *targetList,
 		{
 			Node	   *new_expr;
 
-			new_expr = build_column_default(target_relation, attrno);
+			new_expr = build_column_default(target_relation, attrno,
+											provenances);
 
 			/*
 			 * If there is no default (ie, default is effectively NULL), we
@@ -1274,9 +1291,13 @@ get_assignment_input(Node *node)
  * Make an expression tree for the default value for a column.
  *
  * If there is no default, return a NULL instead.
+ *
+ * Caller must provide provenances, to which whatever is needed for the
+ * column default will be added. PROVENANCE-TODO: This probably needs a
+ * ProvenanceIndex, and the get_typdefault case needs handling.
  */
 Node *
-build_column_default(Relation rel, int attrno)
+build_column_default(Relation rel, int attrno, Provenances *provenances)
 {
 	TupleDesc	rd_att = rel->rd_att;
 	Form_pg_attribute att_tup = TupleDescAttr(rd_att, attrno - 1);
@@ -1285,12 +1306,20 @@ build_column_default(Relation rel, int attrno)
 	Node	   *expr = NULL;
 	Oid			exprtype;
 
+	Assert(provenances != NULL);
+
 	if (att_tup->attidentity)
 	{
 		NextValueExpr *nve = makeNode(NextValueExpr);
+		Oid			identity_relid;
+		Oid			relowner;
 
-		nve->seqid = getIdentitySequence(rel, attrno, false);
+		nve->seqid = getIdentitySequence(rel, attrno, false,
+										 &identity_relid);
 		nve->typeId = att_tup->atttypid;
+
+		relowner = get_rel_owner(identity_relid);
+		ProvenanceForColumn(provenances, identity_relid, relowner, 0);
 
 		return (Node *) nve;
 	}
@@ -1300,7 +1329,8 @@ build_column_default(Relation rel, int attrno)
 	 */
 	if (att_tup->atthasdef)
 	{
-		expr = TupleDescGetDefault(rd_att, attrno);
+		expr = TupleDescGetDefault(rd_att, attrno, provenances,
+								   rel->rd_rel->relowner);
 		if (expr == NULL)
 			elog(ERROR, "default expression not found for attribute %d of relation \"%s\"",
 				 attrno, RelationGetRelationName(rel));
@@ -1311,7 +1341,7 @@ build_column_default(Relation rel, int attrno)
 	 * not for generated columns.
 	 */
 	if (expr == NULL && !att_tup->attgenerated)
-		expr = get_typdefault(atttype);
+		expr = get_typdefault(atttype, provenances);
 
 	if (expr == NULL)
 		return NULL;			/* No default anywhere */
@@ -1325,6 +1355,7 @@ build_column_default(Relation rel, int attrno)
 	 */
 	exprtype = exprType(expr);
 
+	/* PROVENANCE-TODO: FIXME */
 	expr = coerce_to_target_type(NULL,	/* no UNKNOWN params here */
 								 expr, exprtype,
 								 atttype, atttypmod,
@@ -1463,7 +1494,8 @@ findDefaultOnlyColumns(RangeTblEntry *rte)
 static bool
 rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
 				 Relation target_relation,
-				 Bitmapset *unused_cols)
+				 Bitmapset *unused_cols,
+				 Provenances *provenances)
 {
 	List	   *newValues;
 	ListCell   *lc;
@@ -1596,7 +1628,11 @@ rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
 				att_tup = TupleDescAttr(target_relation->rd_att, attrno - 1);
 
 				if (!att_tup->attisdropped)
-					new_expr = build_column_default(target_relation, attrno);
+				{
+					new_expr = build_column_default(target_relation,
+													attrno,
+													provenances);
+				}
 				else
 					new_expr = NULL;	/* force a NULL if dropped */
 
@@ -1763,11 +1799,13 @@ ApplyRetrieveRule(Query *parsetree,
 				  RewriteRule *rule,
 				  int rt_index,
 				  Relation relation,
-				  List *activeRIRs)
+				  List *activeRIRs,
+				  Provenances *provenances)
 {
 	Query	   *rule_action;
 	RangeTblEntry *rte;
 	RowMarkClause *rc;
+	ProvenanceIndex poffset;
 	int			numCols;
 
 	if (list_length(rule->actions) != 1)
@@ -1862,12 +1900,18 @@ ApplyRetrieveRule(Query *parsetree,
 	rc = get_parse_rowmark(parsetree, rt_index);
 
 	/*
-	 * Make a modifiable copy of the view query, and acquire needed locks on
-	 * the relations it mentions.  Force at least RowShareLock for all such
-	 * rels if there's a FOR [KEY] UPDATE/SHARE clause affecting this view.
+	 * Merge the rule's provenance chain into the query's, then make a
+	 * modifiable copy of the view query with adjusted provenance indexes.
 	 */
+	poffset = AppendProvenances(provenances, rule->provenances, 0);
 	rule_action = copyObject(linitial(rule->actions));
+	OffsetProvenances((Node *) rule_action, poffset);
 
+	/*
+	 * Acquire needed locks on the relations the rule mentions.  Force at
+	 * least RowShareLock for all such rels if there's a FOR [KEY]
+	 * UPDATE/SHARE clause affecting this view.
+	 */
 	AcquireRewriteLocks(rule_action, true, (rc != NULL));
 
 	/*
@@ -1882,7 +1926,7 @@ ApplyRetrieveRule(Query *parsetree,
 	/*
 	 * Recursively expand any view references inside the view.
 	 */
-	rule_action = fireRIRrules(rule_action, activeRIRs);
+	rule_action = fireRIRrules(rule_action, activeRIRs, provenances);
 
 	/*
 	 * Make sure the query is marked as having row security if the view query
@@ -2013,7 +2057,8 @@ fireRIRonSubLink(Node *node, fireRIRonSubLink_context *context)
 
 		/* Do what we came for */
 		sub->subselect = (Node *) fireRIRrules((Query *) sub->subselect,
-											   context->activeRIRs);
+											   context->activeRIRs,
+											   context->provenances);
 
 		/*
 		 * Remember if any of the sublinks have row security.
@@ -2039,11 +2084,14 @@ fireRIRonSubLink(Node *node, fireRIRonSubLink_context *context)
  * rules for, used to detect/reject recursion.
  */
 static Query *
-fireRIRrules(Query *parsetree, List *activeRIRs)
+fireRIRrules(Query *parsetree, List *activeRIRs,
+			 Provenances *provenances)
 {
 	int			origResultRelation = parsetree->resultRelation;
 	int			rt_index;
 	ListCell   *lc;
+
+	Assert(provenances != NULL);
 
 	/*
 	 * Expand SEARCH and CYCLE clauses in CTEs.
@@ -2087,7 +2135,8 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		 */
 		if (rte->rtekind == RTE_GRAPH_TABLE)
 		{
-			parsetree = rewriteGraphTable(parsetree, rt_index);
+			parsetree = rewriteGraphTable(parsetree, rt_index,
+										  provenances);
 		}
 
 		/*
@@ -2097,7 +2146,8 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		 */
 		if (rte->rtekind == RTE_SUBQUERY)
 		{
-			rte->subquery = fireRIRrules(rte->subquery, activeRIRs);
+			rte->subquery = fireRIRrules(rte->subquery, activeRIRs,
+										 provenances);
 
 			/*
 			 * While we are here, make sure the query is marked as having row
@@ -2201,7 +2251,8 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 												  rule,
 												  rt_index,
 												  rel,
-												  activeRIRs);
+												  activeRIRs,
+												  provenances);
 				}
 
 				activeRIRs = list_delete_last(activeRIRs);
@@ -2217,7 +2268,8 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
 
 		cte->ctequery = (Node *)
-			fireRIRrules((Query *) cte->ctequery, activeRIRs);
+			fireRIRrules((Query *) cte->ctequery, activeRIRs,
+						 provenances);
 
 		/*
 		 * While we are here, make sure the query is marked as having row
@@ -2236,6 +2288,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 
 		context.activeRIRs = activeRIRs;
 		context.hasRowSecurity = false;
+		context.provenances = provenances;
 
 		query_tree_walker(parsetree, fireRIRonSubLink, &context,
 						  QTW_IGNORE_RC_SUBQUERIES);
@@ -2278,7 +2331,8 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		 */
 		get_row_security_policies(parsetree, rte, rt_index,
 								  &securityQuals, &withCheckOptions,
-								  &hasRowSecurity, &hasSubLinks);
+								  &hasRowSecurity, &hasSubLinks,
+								  provenances);
 
 		if (securityQuals != NIL || withCheckOptions != NIL)
 		{
@@ -2318,6 +2372,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 				 */
 				fire_context.activeRIRs = activeRIRs;
 				fire_context.hasRowSecurity = false;
+				fire_context.provenances = provenances;
 
 				expression_tree_walker((Node *) securityQuals,
 									   fireRIRonSubLink, &fire_context);
@@ -2380,12 +2435,16 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 static Query *
 CopyAndAddInvertedQual(Query *parsetree,
 					   Node *rule_qual,
+					   Provenances *provenances,
+					   ProvenanceIndex poffset,
 					   int rt_index,
 					   CmdType event)
 {
 	/* Don't scribble on the passed qual (it's in the relcache!) */
 	Node	   *new_qual = copyObject(rule_qual);
 	acquireLocksOnSubLinks_context context;
+
+	OffsetProvenances(new_qual, poffset);
 
 	context.for_execute = true;
 
@@ -2412,7 +2471,8 @@ CopyAndAddInvertedQual(Query *parsetree,
 		 * correctly.
 		 */
 		rel = relation_open(rte->relid, NoLock);
-		gen_cols = get_generated_columns(rel, PRS2_NEW_VARNO, true);
+		gen_cols = get_generated_columns(rel, PRS2_NEW_VARNO, true,
+										 provenances);
 		relation_close(rel, NoLock);
 
 		/*
@@ -2487,7 +2547,8 @@ fireRules(Query *parsetree,
 		  List *locks,
 		  bool *instead_flag,
 		  bool *returning_flag,
-		  Query **qual_product)
+		  Query **qual_product,
+		  Provenances *provenances)
 {
 	List	   *results = NIL;
 	ListCell   *l;
@@ -2497,8 +2558,12 @@ fireRules(Query *parsetree,
 		RewriteRule *rule_lock = (RewriteRule *) lfirst(l);
 		Node	   *event_qual = rule_lock->qual;
 		List	   *actions = rule_lock->actions;
+		ProvenanceIndex poffset;
 		QuerySource qsrc;
 		ListCell   *r;
+
+		/* Merge the rule's provenance chain into the query's. */
+		poffset = AppendProvenances(provenances, rule_lock->provenances, 0);
 
 		/* Determine correct QuerySource value for actions */
 		if (rule_lock->isInstead)
@@ -2534,6 +2599,8 @@ fireRules(Query *parsetree,
 					*qual_product = copyObject(parsetree);
 				*qual_product = CopyAndAddInvertedQual(*qual_product,
 													   event_qual,
+													   provenances,
+													   poffset,
 													   rt_index,
 													   event);
 			}
@@ -2549,7 +2616,8 @@ fireRules(Query *parsetree,
 
 			rule_action = rewriteRuleAction(parsetree, rule_action,
 											event_qual, rt_index, event,
-											returning_flag);
+											returning_flag,
+											poffset, provenances);
 
 			rule_action->querySource = qsrc;
 			rule_action->canSetTag = false; /* might change later */
@@ -4042,7 +4110,7 @@ rewriteTargetView(Query *parsetree, Relation view)
  */
 static List *
 RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
-			 int num_ctes_processed)
+			 int num_ctes_processed, Provenances *provenances)
 {
 	CmdType		event = parsetree->commandType;
 	bool		instead = false;
@@ -4078,7 +4146,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 		if (ctequery->commandType == CMD_SELECT)
 			continue;
 
-		newstuff = RewriteQuery(ctequery, rewrite_events, 0, 0);
+		newstuff = RewriteQuery(ctequery, rewrite_events, 0, 0,
+								provenances);
 
 		/*
 		 * Currently we can only handle unconditional, single-statement DO
@@ -4217,11 +4286,13 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 															rt_entry_relation,
 															values_rte,
 															values_rte_index,
-															&unused_values_attrnos);
+															&unused_values_attrnos,
+															provenances);
 				/* ... and the VALUES expression lists */
 				if (!rewriteValuesRTE(parsetree, values_rte, values_rte_index,
 									  rt_entry_relation,
-									  unused_values_attrnos))
+									  unused_values_attrnos,
+									  provenances))
 					defaults_remaining = true;
 			}
 			else
@@ -4232,7 +4303,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 										parsetree->commandType,
 										parsetree->override,
 										rt_entry_relation,
-										NULL, 0, NULL);
+										NULL, 0, NULL,
+										provenances);
 			}
 
 			if (parsetree->onConflict &&
@@ -4243,7 +4315,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 										CMD_UPDATE,
 										parsetree->override,
 										rt_entry_relation,
-										NULL, 0, NULL);
+										NULL, 0, NULL,
+										provenances);
 			}
 		}
 		else if (event == CMD_UPDATE)
@@ -4285,7 +4358,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 									parsetree->commandType,
 									parsetree->override,
 									rt_entry_relation,
-									NULL, 0, NULL);
+									NULL, 0, NULL,
+									provenances);
 		}
 		else if (event == CMD_MERGE)
 		{
@@ -4315,7 +4389,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 												action->commandType,
 												action->override,
 												rt_entry_relation,
-												NULL, 0, NULL);
+												NULL, 0, NULL,
+												provenances);
 						break;
 					default:
 						elog(ERROR, "unrecognized commandType: %d", action->commandType);
@@ -4361,7 +4436,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 									locks,
 									&instead,
 									&returning,
-									&qual_product);
+									&qual_product,
+									provenances);
 
 		/*
 		 * If we have a VALUES RTE with any remaining untouched DEFAULT items,
@@ -4520,7 +4596,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 										pt == parsetree ?
 										orig_rt_length :
 										product_orig_rt_length,
-										num_ctes_processed);
+										num_ctes_processed,
+										provenances);
 				rewritten = list_concat(rewritten, newstuff);
 			}
 
@@ -4649,9 +4726,13 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
  *
  * Returns a list of TargetEntry, one for each generated column, containing
  * the attribute numbers and generation expressions.
+ *
+ * Caller must provide provenances, to which whatever is needed for the
+ * generation expression will be added.
  */
 static List *
-get_generated_columns(Relation rel, int rt_index, bool include_stored)
+get_generated_columns(Relation rel, int rt_index, bool include_stored,
+					  Provenances *provenances)
 {
 	List	   *gen_cols = NIL;
 	TupleDesc	tupdesc;
@@ -4671,7 +4752,7 @@ get_generated_columns(Relation rel, int rt_index, bool include_stored)
 				Node	   *defexpr;
 				TargetEntry *te;
 
-				defexpr = build_generation_expression(rel, i + 1);
+				defexpr = build_generation_expression(rel, i + 1, provenances);
 				ChangeVarNodes(defexpr, 1, rt_index, 0);
 
 				te = makeTargetEntry((Expr *) defexpr, i + 1, 0, false);
@@ -4688,9 +4769,13 @@ get_generated_columns(Relation rel, int rt_index, bool include_stored)
  *
  * This is for expressions that are not part of a query, such as default
  * expressions or index predicates.  The rt_index is usually 1.
+ *
+ * Caller must provide provenances, to which whatever is needed for the
+ * generation expression will be added.
  */
 Node *
-expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index)
+expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index,
+								 Provenances *provenances)
 {
 	TupleDesc	tupdesc = RelationGetDescr(rel);
 
@@ -4705,7 +4790,7 @@ expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index)
 		rte->rtekind = RTE_RELATION;
 		rte->relid = RelationGetRelid(rel);
 
-		vcols = get_generated_columns(rel, rt_index, false);
+		vcols = get_generated_columns(rel, rt_index, false, provenances);
 
 		if (vcols)
 		{
@@ -4727,9 +4812,13 @@ expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index)
  * Build the generation expression for a generated column.
  *
  * Error out if there is no generation expression found for the given column.
+ *
+ * Caller must provide provenances, to which whatever is needed for the
+ * generation expression will be added.
  */
 Node *
-build_generation_expression(Relation rel, int attrno)
+build_generation_expression(Relation rel, int attrno,
+							Provenances *provenances)
 {
 	TupleDesc	rd_att = RelationGetDescr(rel);
 	Form_pg_attribute att_tup = TupleDescAttr(rd_att, attrno - 1);
@@ -4742,7 +4831,7 @@ build_generation_expression(Relation rel, int attrno)
 	Assert(att_tup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL ||
 		   att_tup->attgenerated == ATTRIBUTE_GENERATED_STORED);
 
-	defexpr = build_column_default(rel, attrno);
+	defexpr = build_column_default(rel, attrno, provenances);
 	if (defexpr == NULL)
 		elog(ERROR, "no generation expression found for column number %d of table \"%s\"",
 			 attrno, RelationGetRelationName(rel));
@@ -4778,7 +4867,7 @@ build_generation_expression(Relation rel, int attrno)
  * or have been scanned by AcquireRewriteLocks to acquire suitable locks.
  */
 List *
-QueryRewrite(Query *parsetree)
+QueryRewrite(Query *parsetree, Provenances *provenances)
 {
 	int64		input_query_id = parsetree->queryId;
 	List	   *querylist;
@@ -4799,7 +4888,7 @@ QueryRewrite(Query *parsetree)
 	 *
 	 * Apply all non-SELECT rules possibly getting 0 or many queries
 	 */
-	querylist = RewriteQuery(parsetree, NIL, 0, 0);
+	querylist = RewriteQuery(parsetree, NIL, 0, 0, provenances);
 
 	/*
 	 * Step 2
@@ -4813,7 +4902,7 @@ QueryRewrite(Query *parsetree)
 	{
 		Query	   *query = (Query *) lfirst(l);
 
-		query = fireRIRrules(query, NIL);
+		query = fireRIRrules(query, NIL, provenances);
 
 		query->queryId = input_query_id;
 

@@ -16,8 +16,10 @@
 
 #include "catalog/objectaddress.h"
 #include "nodes/parsenodes.h"
+#include "parser/parse_node.h"
 
-extern ObjectAddress DefineView(ViewStmt *stmt, const char *queryString,
+extern ObjectAddress DefineView(ParseState *pstate, ViewStmt *stmt,
+								const char *queryString,
 								int stmt_location, int stmt_len);
 
 extern void StoreViewQuery(Oid viewOid, Query *viewParse, bool replace);

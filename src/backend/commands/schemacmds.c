@@ -28,6 +28,8 @@
 #include "commands/event_trigger.h"
 #include "commands/schemacmds.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
+#include "nodes/provenance.h"
 #include "parser/parse_utilcmd.h"
 #include "parser/scansup.h"
 #include "tcop/utility.h"
@@ -215,6 +217,7 @@ CreateSchemaCommand(ParseState *pstate, CreateSchemaStmt *stmt,
 		wrapper->utilityStmt = stmt;
 		wrapper->stmt_location = stmt_location;
 		wrapper->stmt_len = stmt_len;
+		wrapper->provenances = copyObject(pstate->p_provenances);
 		wrapper->planOrigin = PLAN_STMT_INTERNAL;
 
 		/* do this step */

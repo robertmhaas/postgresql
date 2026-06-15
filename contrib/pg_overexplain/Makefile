@@ -8,6 +8,7 @@ OBJS = \
 PGFILEDESC = "pg_overexplain - allow EXPLAIN to dump even more details"
 
 REGRESS = pg_overexplain
+TAP_TESTS = 1
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

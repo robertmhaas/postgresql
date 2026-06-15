@@ -3678,7 +3678,7 @@ exec_stmt_return_query(PLpgSQL_execstate *estate,
 		options.must_return_tuples = true;
 		options.dest = treceiver;
 
-		rc = SPI_execute_extended(querystr, &options);
+		rc = SPI_execute_extended(querystr, &options, estate->provenances);
 		if (rc < 0)
 			elog(ERROR, "SPI_execute_extended failed executing query \"%s\": %s",
 				 querystr, SPI_result_code_string(rc));
@@ -4034,6 +4034,7 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 
 	estate->readonly_func = func->fn_readonly;
 	estate->atomic = true;
+	estate->provenances = func->provenances;
 
 	estate->exitlabel = NULL;
 	estate->cur_error = NULL;
@@ -4217,6 +4218,7 @@ exec_prepare_plan(PLpgSQL_execstate *estate,
 	options.parserSetupArg = expr;
 	options.parseMode = expr->parseMode;
 	options.cursorOptions = cursorOptions;
+	options.provenances = estate->provenances;
 	plan = SPI_prepare_extended(expr->query, &options);
 	if (plan == NULL)
 		elog(ERROR, "SPI_prepare_extended failed for \"%s\": %s",
@@ -4578,7 +4580,7 @@ exec_stmt_dynexecute(PLpgSQL_execstate *estate,
 	options.params = paramLI;
 	options.read_only = estate->readonly_func;
 
-	exec_res = SPI_execute_extended(querystr, &options);
+	exec_res = SPI_execute_extended(querystr, &options, estate->provenances);
 
 	switch (exec_res)
 	{
@@ -8170,7 +8172,7 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 		/* Note: we don't bother labeling the expression tree with collation */
 
 		/* Plan the expression and build a CachedExpression */
-		cast_cexpr = GetCachedExpression(cast_expr);
+		cast_cexpr = GetCachedExpression(cast_expr, estate->provenances);
 		cast_expr = cast_cexpr->expr;
 
 		/* Detect whether we have a no-op (RelabelType) coercion */
@@ -9100,6 +9102,7 @@ exec_dynquery_with_params(PLpgSQL_execstate *estate,
 	options.params = exec_eval_using_params(estate, params);
 	options.cursorOptions = cursorOptions;
 	options.read_only = estate->readonly_func;
+	options.provenances = estate->provenances;
 
 	portal = SPI_cursor_parse_open(portalname, querystr, &options);
 

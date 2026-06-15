@@ -102,7 +102,7 @@ test_plan_advice_advisor(PlannerGlobal *glob, Query *parse,
 		 * some day.)
 		 */
 		pstmt = planner(copyObject(parse), query_string, cursorOptions,
-						glob->boundParams, es);
+						glob->boundParams, es, glob->provenances);
 	}
 	PG_FINALLY();
 	{

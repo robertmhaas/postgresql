@@ -27,6 +27,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/stat_utils.h"
@@ -449,9 +450,15 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 	if (!isnull)
 	{
 		char	   *s;
+		Provenances *provenances;
+
+		/* PROVENANCE-TODO: Caller should pass down provenances */
+		provenances = InitProvenancesForCache(PROVENANCE_STATISTICS,
+											  stxform->oid,
+											  stxform->stxowner);
 
 		s = TextDatumGetCString(exprdatum);
-		exprs = (List *) stringToNode(s);
+		exprs = (List *) stringToNode(s, 0);
 		pfree(s);
 
 		/*
@@ -462,8 +469,13 @@ extended_statistics_update(FunctionCallInfo fcinfo)
 		 *
 		 * We must not use canonicalize_qual(), however, since these are not
 		 * qual expressions.
+		 *
+		 * The provenances object is not needed after this point since we do
+		 * not execute the resulting expression; but eval_const_expressions
+		 * must have accurate information since it can execute functions.
 		 */
-		exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+		exprs = (List *) eval_const_expressions(NULL, (Node *) exprs,
+												provenances);
 
 		/* May as well fix opfuncids too */
 		fix_opfuncids((Node *) exprs);

@@ -19,6 +19,7 @@
 #include "nodes/bitmapset.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
+#include "nodes/provenance.h"
 
 
 /* ----------------------------------------------------------------
@@ -67,6 +68,9 @@ typedef struct PlannedStmt
 
 	/* query identifier (copied from Query) */
 	int64		queryId;
+
+	/* provenance (copied from Query) */
+	Provenances *provenances;
 
 	/* plan identifier (can be set by plugins) */
 	int64		planId;

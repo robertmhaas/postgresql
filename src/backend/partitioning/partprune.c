@@ -45,6 +45,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/appendinfo.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -113,6 +114,7 @@ typedef struct GeneratePruningStepsContext
 	/* Copies of input arguments for gen_partprune_steps: */
 	RelOptInfo *rel;			/* the partitioned relation */
 	PartClauseTarget target;	/* use-case we're generating steps for */
+	Provenances *provenances;	/* provenances for expressions */
 	/* Result data: */
 	List	   *steps;			/* list of PartitionPruneSteps */
 	bool		has_mutable_op; /* clauses include any stable operators */
@@ -147,6 +149,7 @@ static List *make_partitionedrel_pruneinfo(PlannerInfo *root,
 										   Bitmapset **matchedsubplans);
 static void gen_partprune_steps(RelOptInfo *rel, List *clauses,
 								PartClauseTarget target,
+								Provenances *provenances,
 								GeneratePruningStepsContext *context);
 static List *gen_partprune_steps_internal(GeneratePruningStepsContext *context,
 										  List *clauses);
@@ -200,7 +203,8 @@ static PartClauseMatchStatus match_boolean_partition_clause(Oid partopfamily,
 															Expr *clause,
 															const Expr *partkey,
 															Expr **outconst,
-															bool *notclause);
+															bool *notclause,
+															Provenances *provenances);
 static void partkey_datum_from_expr(PartitionPruneContext *context,
 									Expr *expr, int stateidx,
 									Datum *value, bool *isnull);
@@ -547,7 +551,7 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 		 * that would require per-scan pruning.
 		 */
 		gen_partprune_steps(subpart, partprunequal, PARTTARGET_INITIAL,
-							&context);
+							root->glob->provenances, &context);
 
 		if (context.contradictory)
 		{
@@ -581,7 +585,7 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
 		{
 			/* ... OK, we'd better think about it */
 			gen_partprune_steps(subpart, partprunequal, PARTTARGET_EXEC,
-								&context);
+								root->glob->provenances, &context);
 
 			if (context.contradictory)
 			{
@@ -742,12 +746,14 @@ make_partitionedrel_pruneinfo(PlannerInfo *root, RelOptInfo *parentrel,
  */
 static void
 gen_partprune_steps(RelOptInfo *rel, List *clauses, PartClauseTarget target,
+					Provenances *provenances,
 					GeneratePruningStepsContext *context)
 {
 	/* Initialize all output values to zero/false/NULL */
 	memset(context, 0, sizeof(GeneratePruningStepsContext));
 	context->rel = rel;
 	context->target = target;
+	context->provenances = provenances;
 
 	/*
 	 * If this partitioned table is in turn a partition, and it shares any
@@ -777,7 +783,7 @@ gen_partprune_steps(RelOptInfo *rel, List *clauses, PartClauseTarget target,
  * Callers must ensure that 'rel' is a partitioned table.
  */
 Bitmapset *
-prune_append_rel_partitions(RelOptInfo *rel)
+prune_append_rel_partitions(RelOptInfo *rel, Provenances *provenances)
 {
 	List	   *clauses = rel->baserestrictinfo;
 	List	   *pruning_steps;
@@ -803,7 +809,7 @@ prune_append_rel_partitions(RelOptInfo *rel)
 	 * set.
 	 */
 	gen_partprune_steps(rel, clauses, PARTTARGET_PLANNER,
-						&gcontext);
+						provenances, &gcontext);
 	if (gcontext.contradictory)
 		return NULL;
 	pruning_steps = gcontext.steps;
@@ -1842,7 +1848,8 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 	 */
 	boolmatchstatus = match_boolean_partition_clause(partopfamily, clause,
 													 partkey, &expr,
-													 &notclause);
+													 &notclause,
+													 context->provenances);
 
 	if (boolmatchstatus == PARTCLAUSE_MATCH_CLAUSE)
 	{
@@ -3712,7 +3719,8 @@ perform_pruning_combine_step(PartitionPruneContext *context,
  */
 static PartClauseMatchStatus
 match_boolean_partition_clause(Oid partopfamily, Expr *clause, const Expr *partkey,
-							   Expr **outconst, bool *notclause)
+							   Expr **outconst, bool *notclause,
+							   Provenances *provenances)
 {
 	Expr	   *leftop;
 
@@ -3776,7 +3784,7 @@ match_boolean_partition_clause(Oid partopfamily, Expr *clause, const Expr *partk
 		/* Compare to the partition key, and make up a clause ... */
 		if (equal(leftop, partkey))
 			*outconst = (Expr *) makeBoolConst(!is_not_clause, false);
-		else if (equal(negate_clause((Node *) leftop), partkey))
+		else if (equal(negate_clause((Node *) leftop, provenances), partkey))
 			*outconst = (Expr *) makeBoolConst(is_not_clause, false);
 		else
 			return PARTCLAUSE_NOMATCH;

@@ -25,6 +25,7 @@
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -190,9 +191,12 @@ static IndexClause *expand_indexqual_rowcompare(PlannerInfo *root,
 												bool var_on_left);
 static void match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 									List **orderby_clauses_p,
-									List **clause_columns_p);
+									List **clause_columns_p,
+									Provenances *provenances);
 static Expr *match_clause_to_ordering_op(IndexOptInfo *index,
-										 int indexcol, Expr *clause, Oid pk_opfamily);
+										 int indexcol, Expr *clause,
+										 Oid pk_opfamily,
+										 Provenances *provenances);
 static bool ec_member_matches_indexcol(PlannerInfo *root, RelOptInfo *rel,
 									   EquivalenceClass *ec, EquivalenceMember *em,
 									   void *arg);
@@ -269,6 +273,14 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 		 */
 		if (index->indpred != NIL && !index->predOK)
 			continue;
+
+		/* Merge index provenances into the global list. */
+		if (index->indexprs_provenances)
+			AppendProvenances(root->glob->provenances,
+							  index->indexprs_provenances, 0);
+		if (index->indpred_provenances)
+			AppendProvenances(root->glob->provenances,
+							  index->indpred_provenances, 0);
 
 		/*
 		 * Identify the restriction clauses that can match the index.
@@ -934,7 +946,8 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		 */
 		match_pathkeys_to_index(index, root->query_pathkeys,
 								&orderbyclauses,
-								&orderbyclausecols);
+								&orderbyclausecols,
+								root->glob->provenances);
 		if (list_length(root->query_pathkeys) == list_length(orderbyclauses))
 			useful_pathkeys = root->query_pathkeys;
 		else
@@ -1160,6 +1173,12 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 		/*
 		 * Construct paths if possible.
 		 */
+		if (index->indexprs_provenances)
+			AppendProvenances(root->glob->provenances,
+							  index->indexprs_provenances, 0);
+		if (index->indpred_provenances)
+			AppendProvenances(root->glob->provenances,
+							  index->indpred_provenances, 0);
 		indexpaths = build_index_paths(root, rel,
 									   index, &clauseset,
 									   useful_predicate,
@@ -2976,6 +2995,9 @@ match_opclause_to_indexcol(PlannerInfo *root,
 		if (IndexCollMatchesExprColl(idxcollation, expr_coll))
 		{
 			Oid			comm_op = get_commutator(expr_op);
+			Oid			comm_op_owner;
+
+			comm_op_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
 
 			if (OidIsValid(comm_op) &&
 				op_in_opfamily(comm_op, opfamily))
@@ -2983,7 +3005,9 @@ match_opclause_to_indexcol(PlannerInfo *root,
 				RestrictInfo *commrinfo;
 
 				/* Build a commuted OpExpr and RestrictInfo */
-				commrinfo = commute_restrictinfo(rinfo, comm_op);
+				commrinfo = commute_restrictinfo(rinfo, comm_op,
+												 comm_op_owner,
+												 root->glob->provenances);
 
 				/* Make an IndexClause showing that as a derived qual */
 				iclause = makeNode(IndexClause);
@@ -3714,7 +3738,8 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 static void
 match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 						List **orderby_clauses_p,
-						List **clause_columns_p)
+						List **clause_columns_p,
+						Provenances *provenances)
 {
 	ListCell   *lc1;
 
@@ -3774,7 +3799,8 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 				expr = match_clause_to_ordering_op(index,
 												   indexcol,
 												   member->em_expr,
-												   pathkey->pk_opfamily);
+												   pathkey->pk_opfamily,
+												   provenances);
 				if (expr)
 				{
 					*orderby_clauses_p = lappend(*orderby_clauses_p, expr);
@@ -3826,13 +3852,15 @@ static Expr *
 match_clause_to_ordering_op(IndexOptInfo *index,
 							int indexcol,
 							Expr *clause,
-							Oid pk_opfamily)
+							Oid pk_opfamily,
+							Provenances *provenances)
 {
 	Oid			opfamily;
 	Oid			idxcollation;
 	Node	   *leftop,
 			   *rightop;
 	Oid			expr_op;
+	Oid			expr_op_owner;
 	Oid			expr_coll;
 	Oid			sortfamily;
 	bool		commuted;
@@ -3876,6 +3904,7 @@ match_clause_to_ordering_op(IndexOptInfo *index,
 	{
 		/* Might match, but we need a commuted operator */
 		expr_op = get_commutator(expr_op);
+		expr_op_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
 		if (expr_op == InvalidOid)
 			return NULL;
 		commuted = true;
@@ -3903,6 +3932,10 @@ match_clause_to_ordering_op(IndexOptInfo *index,
 		newclause->opno = expr_op;
 		newclause->opfuncid = InvalidOid;
 		newclause->args = list_make2(rightop, leftop);
+		newclause->pidx = ProvenanceForOperator(provenances,
+												expr_op,
+												expr_op_owner,
+												((OpExpr *) clause)->pidx);
 
 		clause = (Expr *) newclause;
 	}

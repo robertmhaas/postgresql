@@ -71,6 +71,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "pgstat.h"
 #include "rewrite/rewriteDefine.h"
@@ -832,7 +833,12 @@ RelationBuildRuleLock(Relation relation)
 		Assert(!isnull);
 		rule_str = TextDatumGetCString(rule_datum);
 		oldcxt = MemoryContextSwitchTo(rulescxt);
-		rule->actions = (List *) stringToNode(rule_str);
+		rule->provenances =
+			InitProvenancesForCache(PROVENANCE_RULE,
+									rewrite_form->oid,
+									relation->rd_rel->relowner);
+		rule->actions = (List *) stringToNode(rule_str, 0);
+
 		MemoryContextSwitchTo(oldcxt);
 		pfree(rule_str);
 
@@ -843,7 +849,7 @@ RelationBuildRuleLock(Relation relation)
 		Assert(!isnull);
 		rule_str = TextDatumGetCString(rule_datum);
 		oldcxt = MemoryContextSwitchTo(rulescxt);
-		rule->qual = (Node *) stringToNode(rule_str);
+		rule->qual = (Node *) stringToNode(rule_str, 0);
 		MemoryContextSwitchTo(oldcxt);
 		pfree(rule_str);
 
@@ -1212,6 +1218,7 @@ retry:
 	relation->rd_pdcxt = NULL;
 	relation->rd_pddcxt = NULL;
 	relation->rd_partcheck = NIL;
+	relation->rd_partcheck_provenances = NULL;
 	relation->rd_partcheckvalid = false;
 	relation->rd_partcheckcxt = NULL;
 
@@ -4542,6 +4549,7 @@ AttrDefaultFetch(Relation relation, int ndef)
 			/* detoast and convert to cstring in caller's context */
 			char	   *s = TextDatumGetCString(val);
 
+			attrdef[found].adoid = adform->oid;
 			attrdef[found].adnum = adform->adnum;
 			attrdef[found].adbin = MemoryContextStrdup(CacheMemoryContext, s);
 			pfree(s);
@@ -4671,6 +4679,7 @@ CheckNNConstraintFetch(Relation relation)
 			/* detoast and convert to cstring in caller's context */
 			char	   *s = TextDatumGetCString(val);
 
+			check[found].ccoid = conform->oid;
 			check[found].ccenforced = conform->conenforced;
 			check[found].ccvalid = conform->convalidated;
 			check[found].ccnoinherit = conform->connoinherit;
@@ -5086,6 +5095,24 @@ RelationGetReplicaIndex(Relation relation)
 }
 
 /*
+ * RelationHasIndexExpressions -- check whether an index has expressions
+ *
+ * This is a lightweight check that avoids populating the cache or
+ * calling eval_const_expressions.
+ */
+bool
+RelationHasIndexExpressions(Relation relation)
+{
+	if (relation->rd_indexprs)
+		return true;
+	if (relation->rd_indextuple == NULL ||
+		heap_attisnull(relation->rd_indextuple,
+					   Anum_pg_index_indexprs, NULL))
+		return false;
+	return true;
+}
+
+/*
  * RelationGetIndexExpressions -- get the index expressions for an index
  *
  * We cache the result of transforming pg_index.indexprs into a node tree.
@@ -5093,11 +5120,15 @@ RelationGetReplicaIndex(Relation relation)
  * Otherwise, the returned tree is copied into the caller's memory context.
  * (We don't want to return a pointer to the relcache copy, since it could
  * disappear due to relcache invalidation.)
+ *
+ * The associated provenances are cached in relation->rd_indexprs_provenances
+ * and can be accessed directly by callers who need them.
  */
 List *
 RelationGetIndexExpressions(Relation relation)
 {
 	List	   *result;
+	Provenances *local_provenances;
 	Datum		exprsDatum;
 	bool		isnull;
 	char	   *exprsString;
@@ -5123,7 +5154,8 @@ RelationGetIndexExpressions(Relation relation)
 							  &isnull);
 	Assert(!isnull);
 	exprsString = TextDatumGetCString(exprsDatum);
-	result = (List *) stringToNode(exprsString);
+	local_provenances = InitProvenancesForIndexExpressionCache(relation);
+	result = (List *) stringToNode(exprsString, 0);
 	pfree(exprsString);
 
 	/*
@@ -5133,7 +5165,8 @@ RelationGetIndexExpressions(Relation relation)
 	 * matches without this.  We must not use canonicalize_qual, however,
 	 * since these aren't qual expressions.
 	 */
-	result = (List *) eval_const_expressions(NULL, (Node *) result);
+	result = (List *) eval_const_expressions(NULL, (Node *) result,
+											 local_provenances);
 
 	/* May as well fix opfuncids too */
 	fix_opfuncids((Node *) result);
@@ -5141,6 +5174,7 @@ RelationGetIndexExpressions(Relation relation)
 	/* Now save a copy of the completed tree in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(relation->rd_indexcxt);
 	relation->rd_indexprs = copyObject(result);
+	relation->rd_indexprs_provenances = copyObject(local_provenances);
 	MemoryContextSwitchTo(oldcxt);
 
 	return result;
@@ -5175,7 +5209,7 @@ RelationGetDummyIndexExpressions(Relation relation)
 							  &isnull);
 	Assert(!isnull);
 	exprsString = TextDatumGetCString(exprsDatum);
-	rawExprs = (List *) stringToNode(exprsString);
+	rawExprs = (List *) stringToNode(exprsString, PI_NEVER_EXECUTED);
 	pfree(exprsString);
 
 	/* Construct null Consts; the typlen and typbyval are arbitrary. */
@@ -5198,6 +5232,24 @@ RelationGetDummyIndexExpressions(Relation relation)
 }
 
 /*
+ * RelationHasIndexPredicate -- check whether an index has a predicate
+ *
+ * This is a lightweight check that avoids populating the cache or
+ * calling eval_const_expressions.
+ */
+bool
+RelationHasIndexPredicate(Relation relation)
+{
+	if (relation->rd_indpred)
+		return true;
+	if (relation->rd_indextuple == NULL ||
+		heap_attisnull(relation->rd_indextuple,
+					   Anum_pg_index_indpred, NULL))
+		return false;
+	return true;
+}
+
+/*
  * RelationGetIndexPredicate -- get the index predicate for an index
  *
  * We cache the result of transforming pg_index.indpred into an implicit-AND
@@ -5206,11 +5258,16 @@ RelationGetDummyIndexExpressions(Relation relation)
  * Otherwise, the returned tree is copied into the caller's memory context.
  * (We don't want to return a pointer to the relcache copy, since it could
  * disappear due to relcache invalidation.)
+ *
+ * If provenances is not NULL, the cached provenances for the returned
+ * The associated provenances are cached in relation->rd_indpred_provenances
+ * and can be accessed directly by callers who need them.
  */
 List *
 RelationGetIndexPredicate(Relation relation)
 {
 	List	   *result;
+	Provenances *local_provenances;
 	Datum		predDatum;
 	bool		isnull;
 	char	   *predString;
@@ -5236,7 +5293,8 @@ RelationGetIndexPredicate(Relation relation)
 							 &isnull);
 	Assert(!isnull);
 	predString = TextDatumGetCString(predDatum);
-	result = (List *) stringToNode(predString);
+	local_provenances = InitProvenancesForIndexPredicateCache(relation);
+	result = (List *) stringToNode(predString, 0);
 	pfree(predString);
 
 	/*
@@ -5248,7 +5306,8 @@ RelationGetIndexPredicate(Relation relation)
 	 * stuff involving subqueries, however, since we don't allow any in index
 	 * predicates.)
 	 */
-	result = (List *) eval_const_expressions(NULL, (Node *) result);
+	result = (List *) eval_const_expressions(NULL, (Node *) result,
+											 local_provenances);
 
 	result = (List *) canonicalize_qual((Expr *) result, false);
 
@@ -5261,6 +5320,7 @@ RelationGetIndexPredicate(Relation relation)
 	/* Now save a copy of the completed tree in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(relation->rd_indexcxt);
 	relation->rd_indpred = copyObject(result);
+	relation->rd_indpred_provenances = copyObject(local_provenances);
 	MemoryContextSwitchTo(oldcxt);
 
 	return result;
@@ -5402,14 +5462,16 @@ restart:
 		datum = heap_getattr(indexDesc->rd_indextuple, Anum_pg_index_indexprs,
 							 GetPgIndexDescriptor(), &isnull);
 		if (!isnull)
-			indexExpressions = stringToNode(TextDatumGetCString(datum));
+			indexExpressions = stringToNode(TextDatumGetCString(datum),
+											PI_NEVER_EXECUTED);
 		else
 			indexExpressions = NULL;
 
 		datum = heap_getattr(indexDesc->rd_indextuple, Anum_pg_index_indpred,
 							 GetPgIndexDescriptor(), &isnull);
 		if (!isnull)
-			indexPredicate = stringToNode(TextDatumGetCString(datum));
+			indexPredicate = stringToNode(TextDatumGetCString(datum),
+										  PI_NEVER_EXECUTED);
 		else
 			indexPredicate = NULL;
 
@@ -6487,6 +6549,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_pdcxt = NULL;
 		rel->rd_pddcxt = NULL;
 		rel->rd_partcheck = NIL;
+		rel->rd_partcheck_provenances = NULL;
 		rel->rd_partcheckvalid = false;
 		rel->rd_partcheckcxt = NULL;
 		rel->rd_indexprs = NIL;

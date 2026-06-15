@@ -151,7 +151,8 @@ create_reloptions_table(void)
  * Build a new index.
  */
 static IndexBuildResult *
-dibuild(Relation heap, Relation index, IndexInfo *indexInfo)
+dibuild(Relation heap, Relation index, IndexInfo *indexInfo,
+		Provenances *provenances)
 {
 	IndexBuildResult *result;
 

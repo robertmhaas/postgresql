@@ -364,7 +364,8 @@ extern PGDLLIMPORT int64 parallel_vacuum_worker_delay_ns;
 extern void ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel);
 extern void vacuum(List *relations, const VacuumParams *params,
 				   BufferAccessStrategy bstrategy, MemoryContext vac_context,
-				   bool isTopLevel);
+				   bool isTopLevel,
+				   struct Provenances *provenances);
 extern void vac_open_indexes(Relation relation, LOCKMODE lockmode,
 							 int *nindexes, Relation **Irel);
 extern void vac_close_indexes(int nindexes, Relation *Irel, LOCKMODE lockmode);
@@ -408,7 +409,8 @@ extern void VacuumUpdateCosts(void);
 extern ParallelVacuumState *parallel_vacuum_init(Relation rel, Relation *indrels,
 												 int nindexes, int nrequested_workers,
 												 int vac_work_mem, int elevel,
-												 BufferAccessStrategy bstrategy);
+												 BufferAccessStrategy bstrategy,
+												 struct Provenances *provenances);
 extern void parallel_vacuum_end(ParallelVacuumState *pvs, IndexBulkDeleteResult **istats);
 extern TidStore *parallel_vacuum_get_dead_items(ParallelVacuumState *pvs,
 												VacDeadItemsInfo **dead_items_info_p);
@@ -429,7 +431,8 @@ extern void parallel_vacuum_main(dsm_segment *seg, shm_toc *toc);
 /* in commands/analyze.c */
 extern void analyze_rel(Oid relid, RangeVar *relation,
 						const VacuumParams *params, List *va_cols, bool in_outer_xact,
-						BufferAccessStrategy bstrategy);
+						BufferAccessStrategy bstrategy,
+						struct Provenances *provenances);
 extern bool attribute_is_analyzable(Relation onerel, int attnum, Form_pg_attribute attr,
 									int *p_attstattarget);
 extern bool std_typanalyze(VacAttrStats *stats);

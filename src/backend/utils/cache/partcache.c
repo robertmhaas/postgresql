@@ -31,11 +31,12 @@
 #include "utils/memutils.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
+#include "nodes/provenance.h"
 #include "utils/syscache.h"
 
 
 static void RelationBuildPartitionKey(Relation relation);
-static List *generate_partition_qual(Relation rel);
+static List *generate_partition_qual(Relation rel, Provenances *provenances);
 
 /*
  * RelationGetPartitionKey -- get partition key, if relation is partitioned
@@ -143,9 +144,11 @@ RelationBuildPartitionKey(Relation relation)
 	{
 		char	   *exprString;
 		Node	   *expr;
+		Provenances *provenances;
 
+		provenances = InitProvenancesForPartitionKeyCache(relation);
 		exprString = TextDatumGetCString(datum);
-		expr = stringToNode(exprString);
+		expr = stringToNode(exprString, 0);
 		pfree(exprString);
 
 		/*
@@ -157,11 +160,12 @@ RelationBuildPartitionKey(Relation relation)
 		 * in canonical form already (ie, no need for OR-merging or constant
 		 * elimination).
 		 */
-		expr = eval_const_expressions(NULL, expr);
+		expr = eval_const_expressions(NULL, expr, provenances);
 		fix_opfuncids(expr);
 
 		oldcxt = MemoryContextSwitchTo(partkeycxt);
 		key->partexprs = (List *) copyObject(expr);
+		key->partexprs_provenances = copyObject(provenances);
 		MemoryContextSwitchTo(oldcxt);
 	}
 
@@ -272,15 +276,18 @@ RelationBuildPartitionKey(Relation relation)
  * RelationGetPartitionQual
  *
  * Returns a list of partition quals
+ *
+ * Any provenances needed for the generated qual will be added to the given
+ * provenances object.
  */
 List *
-RelationGetPartitionQual(Relation rel)
+RelationGetPartitionQual(Relation rel, Provenances *provenances)
 {
 	/* Quick exit */
 	if (!rel->rd_rel->relispartition)
 		return NIL;
 
-	return generate_partition_qual(rel);
+	return generate_partition_qual(rel, provenances);
 }
 
 /*
@@ -305,8 +312,9 @@ get_partition_qual_relid(Oid relid)
 	{
 		Relation	rel = relation_open(relid, AccessShareLock);
 		List	   *and_args;
+		Provenances *provenances = InitProvenancesForPartitionKeyCache(rel);
 
-		and_args = generate_partition_qual(rel);
+		and_args = generate_partition_qual(rel, provenances);
 
 		/* Convert implicit-AND list format to boolean expression */
 		if (and_args == NIL)
@@ -332,9 +340,12 @@ get_partition_qual_relid(Oid relid)
  * We cache a copy of the result in the relcache entry, after constructing
  * it using the caller's context.  This approach avoids leaking any data
  * into long-lived cache contexts, especially if we fail partway through.
+ *
+ * Any provenances needed for the generated qual will be added to the given
+ * provenances object.
  */
 static List *
-generate_partition_qual(Relation rel)
+generate_partition_qual(Relation rel, Provenances *provenances)
 {
 	HeapTuple	tuple;
 	MemoryContext oldcxt;
@@ -342,15 +353,28 @@ generate_partition_qual(Relation rel)
 	bool		isnull;
 	List	   *my_qual = NIL,
 			   *result = NIL;
+	Provenances *my_provenances;
 	Oid			parentrelid;
 	Relation	parent;
+	ProvenanceIndex poffset;
 
 	/* Guard against stack overflow due to overly deep partition tree */
 	check_stack_depth();
 
 	/* If we already cached the result, just return a copy */
 	if (rel->rd_partcheckvalid)
-		return copyObject(rel->rd_partcheck);
+	{
+		List	   *partcheck = copyObject(rel->rd_partcheck);
+
+		if (rel->rd_partcheck_provenances != NULL)
+		{
+			poffset = AppendProvenances(provenances,
+										rel->rd_partcheck_provenances, 0);
+			OffsetProvenances((Node *) partcheck, poffset);
+		}
+
+		return partcheck;
+	}
 
 	/*
 	 * Grab at least an AccessShareLock on the parent table.  Must do this
@@ -360,6 +384,12 @@ generate_partition_qual(Relation rel)
 	 */
 	parentrelid = get_partition_parent(RelationGetRelid(rel), true);
 	parent = relation_open(parentrelid, AccessShareLock);
+
+	/*
+	 * Create initial provenances for this cache entry. The parent relation
+	 * controls this relation's partition bound.
+	 */
+	my_provenances = InitProvenancesForPartitionKeyCache(parent);
 
 	/* Get pg_class.relpartbound */
 	tuple = SearchSysCache1(RELOID,
@@ -376,16 +406,19 @@ generate_partition_qual(Relation rel)
 		PartitionBoundSpec *bound;
 
 		bound = castNode(PartitionBoundSpec,
-						 stringToNode(TextDatumGetCString(boundDatum)));
+						 stringToNode(TextDatumGetCString(boundDatum), 0));
 
-		my_qual = get_qual_from_partbound(parent, bound);
+		my_qual = get_qual_from_partbound(parent, bound, my_provenances);
 	}
 
 	ReleaseSysCache(tuple);
 
-	/* Add the parent's quals to the list (if any) */
+	/* Add the parent's quals and provenances to the list (if any) */
 	if (parent->rd_rel->relispartition)
-		result = list_concat(generate_partition_qual(parent), my_qual);
+	{
+		result = list_concat(generate_partition_qual(parent, my_provenances),
+							 my_qual);
+	}
 	else
 		result = my_qual;
 
@@ -418,14 +451,22 @@ generate_partition_qual(Relation rel)
 										  RelationGetRelationName(rel));
 		oldcxt = MemoryContextSwitchTo(rel->rd_partcheckcxt);
 		rel->rd_partcheck = copyObject(result);
+		rel->rd_partcheck_provenances = copyObject(my_provenances);
 		MemoryContextSwitchTo(oldcxt);
 	}
 	else
+	{
 		rel->rd_partcheck = NIL;
+		rel->rd_partcheck_provenances = NULL;
+	}
 	rel->rd_partcheckvalid = true;
 
 	/* Keep the parent locked until commit */
 	relation_close(parent, NoLock);
+
+	/* Adjust for caller's provenances in the returned copy. */
+	poffset = AppendProvenances(provenances, my_provenances, 0);
+	OffsetProvenances((Node *) result, poffset);
 
 	/* Return the working copy to the caller */
 	return result;

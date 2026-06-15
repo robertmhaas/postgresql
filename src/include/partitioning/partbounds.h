@@ -12,6 +12,7 @@
 #define PARTBOUNDS_H
 
 #include "fmgr.h"
+#include "nodes/provenance.h"
 #include "parser/parse_node.h"
 #include "partitioning/partdefs.h"
 
@@ -103,7 +104,8 @@ extern uint64 compute_partition_hash_value(int partnatts, FmgrInfo *partsupfunc,
 										   const Oid *partcollation,
 										   const Datum *values, const bool *isnull);
 extern List *get_qual_from_partbound(Relation parent,
-									 PartitionBoundSpec *spec);
+									 PartitionBoundSpec *spec,
+									 Provenances *provenances);
 extern PartitionBoundInfo partition_bounds_create(PartitionBoundSpec **boundspecs,
 												  int nparts, PartitionKey key, int **mapping);
 extern bool partition_bounds_equal(int partnatts, int16 *parttyplen,
@@ -126,7 +128,8 @@ extern void check_new_partition_bound(char *relname, Relation parent,
 									  ParseState *pstate);
 extern void check_default_partition_contents(Relation parent,
 											 Relation default_rel,
-											 PartitionBoundSpec *new_spec);
+											 PartitionBoundSpec *new_spec,
+											 Provenances *provenances);
 
 extern int32 partition_rbound_datum_cmp(FmgrInfo *partsupfunc,
 										Oid *partcollation,

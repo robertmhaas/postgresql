@@ -59,6 +59,7 @@
 #include "commands/defrem.h"
 #include "common/int.h"
 #include "executor/executor.h"
+#include "nodes/provenance.h"
 #include "lib/dshash.h"
 #include "optimizer/optimizer.h"
 #include "port/pg_bitutils.h"
@@ -1154,6 +1155,7 @@ load_domaintype_info(TypeCacheEntry *typentry)
 			bool		isNull;
 			char	   *constring;
 			Expr	   *check_expr;
+			Provenances *check_provenances;
 			DomainConstraintState *r;
 
 			/* Ignore non-CHECK constraints */
@@ -1184,7 +1186,8 @@ load_domaintype_info(TypeCacheEntry *typentry)
 
 			/* Convert conbin to a node tree, still in caller's context */
 			constring = TextDatumGetCString(val);
-			check_expr = (Expr *) stringToNode(constring);
+			/* PROVENANCE-TODO: no provenances available?! */
+			check_expr = (Expr *) stringToNode(constring, -2);
 
 			/*
 			 * Plan the expression, since ExecInitExpr will expect that.
@@ -1196,7 +1199,12 @@ load_domaintype_info(TypeCacheEntry *typentry)
 			 * CHECK constraints, it's not really clear that it's worth the
 			 * extra overhead to do that.
 			 */
-			check_expr = expression_planner(check_expr);
+			check_provenances =
+				InitProvenancesForCache(PROVENANCE_CONSTRAINT,
+										c->oid,
+										typTup->typowner);
+			check_expr = expression_planner(check_expr,
+											check_provenances);
 
 			/* Create only the minimally needed stuff in dccContext */
 			oldcxt = MemoryContextSwitchTo(dcc->dccContext);
@@ -1205,6 +1213,7 @@ load_domaintype_info(TypeCacheEntry *typentry)
 			r->constrainttype = DOM_CONSTRAINT_CHECK;
 			r->name = pstrdup(NameStr(c->conname));
 			r->check_expr = copyObject(check_expr);
+			r->check_provenances = copyObject(check_provenances);
 			r->check_exprstate = NULL;
 
 			MemoryContextSwitchTo(oldcxt);
@@ -1284,6 +1293,7 @@ load_domaintype_info(TypeCacheEntry *typentry)
 		r->constrainttype = DOM_CONSTRAINT_NOTNULL;
 		r->name = pstrdup("NOT NULL");
 		r->check_expr = NULL;
+		r->check_provenances = NULL;
 		r->check_exprstate = NULL;
 
 		/* lcons to apply the nullness check FIRST */
@@ -1373,6 +1383,7 @@ prep_domain_constraints(List *constraints, MemoryContext execctx)
 		newr->constrainttype = r->constrainttype;
 		newr->name = r->name;
 		newr->check_expr = r->check_expr;
+		newr->check_provenances = r->check_provenances;
 		newr->check_exprstate = ExecInitExpr(r->check_expr, NULL);
 
 		result = lappend(result, newr);

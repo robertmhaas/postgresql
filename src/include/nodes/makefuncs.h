@@ -78,7 +78,8 @@ extern ColumnDef *makeColumnDef(const char *colname,
 								Oid typeOid, int32 typmod, Oid collOid);
 
 extern FuncExpr *makeFuncExpr(Oid funcid, Oid rettype, List *args,
-							  Oid funccollid, Oid inputcollid, CoercionForm fformat);
+							  Oid funccollid, Oid inputcollid,
+							  CoercionForm fformat, ProvenanceIndex pidx);
 
 extern FuncCall *makeFuncCall(List *name, List *args,
 							  CoercionForm funcformat, int location);
@@ -96,7 +97,10 @@ extern Expr *make_ands_explicit(List *andclauses);
 extern List *make_ands_implicit(Expr *clause);
 
 extern IndexInfo *makeIndexInfo(int numattrs, int numkeyattrs, Oid amoid,
-								List *expressions, List *predicates,
+								List *expressions,
+								struct Provenances *expression_provenances,
+								List *predicates,
+								struct Provenances *predicate_provenances,
 								bool unique, bool nulls_not_distinct,
 								bool isready, bool concurrent,
 								bool summarizing, bool withoutoverlaps);
@@ -124,5 +128,6 @@ extern JsonTablePath *makeJsonTablePath(Const *pathvalue, char *pathname);
 extern JsonTablePathSpec *makeJsonTablePathSpec(char *string, char *name,
 												int string_location,
 												int name_location);
+
 
 #endif							/* MAKEFUNC_H */

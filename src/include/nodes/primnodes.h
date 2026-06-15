@@ -23,7 +23,6 @@
 #include "nodes/lockoptions.h"
 #include "nodes/pg_list.h"
 
-
 typedef enum OverridingKind
 {
 	OVERRIDING_NOT_SET = 0,
@@ -523,6 +522,9 @@ typedef struct Aggref
 	/* unique ID of transition state in the Agg */
 	int			aggtransno pg_node_attr(query_jumble_ignore);
 
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
+
 	/* token location, or -1 if unknown */
 	ParseLoc	location;
 } Aggref;
@@ -616,6 +618,8 @@ typedef struct WindowFunc
 	bool		winagg pg_node_attr(query_jumble_ignore);
 	/* ignore nulls. One of the Null Treatment options */
 	int			ignore_nulls;
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 	/* token location, or -1 if unknown */
 	ParseLoc	location;
 } WindowFunc;
@@ -799,6 +803,8 @@ typedef struct FuncExpr
 	Oid			inputcollid pg_node_attr(query_jumble_ignore);
 	/* arguments to the function */
 	List	   *args;
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 	/* token location, or -1 if unknown */
 	ParseLoc	location;
 } FuncExpr;
@@ -867,6 +873,9 @@ typedef struct OpExpr
 
 	/* arguments to the operator (1 or 2) */
 	List	   *args;
+
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 
 	/* token location, or -1 if unknown */
 	ParseLoc	location;
@@ -947,6 +956,10 @@ typedef struct ScalarArrayOpExpr
 
 	/* the scalar and array operands */
 	List	   *args;
+
+	/* provenance index for this expression node */
+	/* PROVENANCE-TODO: make this an array, for match_orclause_to_indexcol */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 
 	/* token location, or -1 if unknown */
 	ParseLoc	location;
@@ -1246,6 +1259,8 @@ typedef struct CoerceViaIO
 	Oid			resultcollid pg_node_attr(query_jumble_ignore);
 	/* how to display this node */
 	CoercionForm coerceformat pg_node_attr(query_jumble_ignore);
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 	ParseLoc	location;		/* token location, or -1 if unknown */
 } CoerceViaIO;
 
@@ -1503,6 +1518,8 @@ typedef struct RowCompareExpr
 	List	   *largs;
 	/* the right-hand input arguments */
 	List	   *rargs;
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 } RowCompareExpr;
 
 /*
@@ -1543,6 +1560,8 @@ typedef struct MinMaxExpr
 	MinMaxOp	op;
 	/* the arguments */
 	List	   *args;
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 	/* token location, or -1 if unknown */
 	ParseLoc	location;
 } MinMaxExpr;
@@ -1894,6 +1913,9 @@ typedef struct JsonExpr
 
 	/* JsonExpr's collation. */
 	Oid			collation;
+
+	/* provenance index for this expression node */
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 
 	/* Original JsonFuncExpr's location */
 	ParseLoc	location;

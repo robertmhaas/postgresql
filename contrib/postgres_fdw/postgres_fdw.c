@@ -718,7 +718,8 @@ static bool import_fetched_statistics(const char *schemaname,
 									  const char *relname,
 									  int attrcnt,
 									  const RemoteAttributeMapping *remattrmap,
-									  RemoteStatsResults *remstats);
+									  RemoteStatsResults *remstats,
+									  Provenances *provenances);
 static void map_field_to_arg(PGresult *res, int row, int field,
 							 int arg, Datum *values, char *nulls);
 static bool import_spi_query_ok(void);
@@ -5600,6 +5601,7 @@ postgresImportForeignStatistics(Relation relation, List *va_cols, int elevel)
 	bool		restore_stats = false;
 	bool		ok = false;
 	ListCell   *lc;
+	Provenances *provenances;
 
 	schemaname = get_namespace_name(RelationGetNamespace(relation));
 	relname = RelationGetRelationName(relation);
@@ -5649,6 +5651,9 @@ postgresImportForeignStatistics(Relation relation, List *va_cols, int elevel)
 		return false;
 	}
 
+	/* PROVENANCE-TODO: Caller must pass provenances for us to extend. */
+	provenances = InitProvenancesForForeignTableCache(relation);
+
 	/*
 	 * OK, let's do it.
 	 */
@@ -5662,7 +5667,8 @@ postgresImportForeignStatistics(Relation relation, List *va_cols, int elevel)
 
 	if (ok)
 		ok = import_fetched_statistics(schemaname, relname,
-									   attrcnt, remattrmap, &remstats);
+									   attrcnt, remattrmap, &remstats,
+									   provenances);
 
 	if (ok)
 		ereport(elevel,
@@ -6132,7 +6138,8 @@ import_fetched_statistics(const char *schemaname,
 						  const char *relname,
 						  int attrcnt,
 						  const RemoteAttributeMapping *remattrmap,
-						  RemoteStatsResults *remstats)
+						  RemoteStatsResults *remstats,
+						  Provenances *provenances)
 {
 	SPIPlanPtr	attimport_plan = NULL;
 	SPIPlanPtr	attclear_plan = NULL;
@@ -6164,12 +6171,14 @@ import_fetched_statistics(const char *schemaname,
 		Assert(PQntuples(remstats->att) >= 1);
 
 		attimport_plan = SPI_prepare(attimport_sql, ATTIMPORT_SQL_NUM_FIELDS,
-									 (Oid *) attimport_argtypes);
+									 (Oid *) attimport_argtypes,
+									 provenances);
 		if (attimport_plan == NULL)
 			elog(ERROR, "failed to prepare attimport_sql query");
 
 		attclear_plan = SPI_prepare(attclear_sql, ATTCLEAR_SQL_NUM_FIELDS,
-									(Oid *) attclear_argtypes);
+									(Oid *) attclear_argtypes,
+								    provenances);
 		if (attclear_plan == NULL)
 			elog(ERROR, "failed to prepare attclear_sql query");
 
@@ -6248,7 +6257,7 @@ import_fetched_statistics(const char *schemaname,
 	spirc = SPI_execute_with_args(relimport_sql,
 								  RELIMPORT_SQL_NUM_FIELDS,
 								  (Oid *) relimport_argtypes,
-								  values, nulls, false, 1);
+								  values, nulls, false, 1, provenances);
 	if (spirc != SPI_OK_SELECT)
 		elog(ERROR, "failed to execute relimport_sql query for foreign table \"%s.%s\"",
 			 schemaname, relname);

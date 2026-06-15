@@ -176,7 +176,8 @@ static BlockNumber gistGetParent(GISTBuildState *buildstate, BlockNumber child);
  * Main entry point to GiST index build.
  */
 IndexBuildResult *
-gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+gistbuild(Relation heap, Relation index, IndexInfo *indexInfo,
+		  Provenances *provenances)
 {
 	IndexBuildResult *result;
 	double		reltuples;
@@ -273,7 +274,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		/* Scan the table, adding all tuples to the tuplesort */
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 										   gistSortedBuildCallback,
-										   &buildstate, NULL);
+										   &buildstate, NULL, provenances);
 
 		/*
 		 * Perform the sort and build index pages.
@@ -312,7 +313,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		/* Scan the table, inserting all the tuples to the index. */
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 										   gistBuildCallback,
-										   &buildstate, NULL);
+										   &buildstate, NULL, provenances);
 
 		/*
 		 * If buffering was used, flush out all the tuples that are still in

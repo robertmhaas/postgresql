@@ -679,6 +679,7 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 	char	   *filename;
 	bool		is_program;
 	List	   *options;
+	ParseState *pstate = make_parsestate(NULL);
 	CopyFromState cstate;
 	FileFdwExecutionState *festate;
 
@@ -695,11 +696,15 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 	/* Add any options from the plan (currently only convert_selectively) */
 	options = list_concat(options, plan->fdw_private);
 
+	/* XXX fake provenance information */
+	pstate->p_provenances =
+		InitProvenancesForForeignTableCache(node->ss.ss_currentRelation);
+
 	/*
 	 * Create CopyState from FDW options.  We always acquire all columns, so
 	 * as to match the expected ScanTupleSlot signature.
 	 */
-	cstate = BeginCopyFrom(NULL,
+	cstate = BeginCopyFrom(pstate,
 						   node->ss.ss_currentRelation,
 						   NULL,
 						   filename,
@@ -825,10 +830,14 @@ static void
 fileReScanForeignScan(ForeignScanState *node)
 {
 	FileFdwExecutionState *festate = (FileFdwExecutionState *) node->fdw_state;
+	ParseState *pstate = make_parsestate(NULL);
+
+	/* Pass current provenances forward to new CopyFromState. */
+	pstate->p_provenances = copyObject(festate->cstate->provenances);
 
 	EndCopyFrom(festate->cstate);
 
-	festate->cstate = BeginCopyFrom(NULL,
+	festate->cstate = BeginCopyFrom(pstate,
 									node->ss.ss_currentRelation,
 									NULL,
 									festate->filename,
@@ -1201,6 +1210,7 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 	ErrorContextCallback errcallback;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	MemoryContext tupcontext;
+	ParseState *pstate = make_parsestate(NULL);
 
 	Assert(onerel);
 	Assert(targrows > 0);
@@ -1209,14 +1219,17 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 	values = (Datum *) palloc(tupDesc->natts * sizeof(Datum));
 	nulls = (bool *) palloc(tupDesc->natts * sizeof(bool));
 
+	/* XXX fake provenance information */
+	pstate->p_provenances = InitProvenancesForForeignTableCache(onerel);
+
 	/* Fetch options of foreign table */
 	fileGetOptions(RelationGetRelid(onerel), &filename, &is_program, &options);
 
 	/*
 	 * Create CopyState from FDW options.
 	 */
-	cstate = BeginCopyFrom(NULL, onerel, NULL, filename, is_program, NULL, NIL,
-						   options);
+	cstate = BeginCopyFrom(pstate, onerel, NULL, filename, is_program,
+						   NULL, NIL, options);
 
 	/*
 	 * Use per-tuple memory context to prevent leak of memory used to read

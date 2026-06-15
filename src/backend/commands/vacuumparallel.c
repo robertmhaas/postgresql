@@ -41,6 +41,7 @@
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "executor/instrument.h"
+#include "nodes/provenance.h"
 #include "optimizer/paths.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
@@ -59,6 +60,7 @@
 #define PARALLEL_VACUUM_KEY_BUFFER_USAGE	3
 #define PARALLEL_VACUUM_KEY_WAL_USAGE		4
 #define PARALLEL_VACUUM_KEY_INDEX_STATS		5
+#define PARALLEL_VACUUM_KEY_PROVENANCES		6
 
 /*
  * Struct for cost-based vacuum delay related parameters to share among an
@@ -220,6 +222,9 @@ struct ParallelVacuumState
 	Relation   *indrels;
 	int			nindexes;
 
+	/* Provenances for expression evaluation */
+	Provenances *provenances;
+
 	/* Shared information among parallel vacuum workers */
 	PVShared   *shared;
 
@@ -304,7 +309,8 @@ static void parallel_vacuum_dsm_detach(dsm_segment *seg, Datum arg);
 ParallelVacuumState *
 parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 					 int nrequested_workers, int vac_work_mem,
-					 int elevel, BufferAccessStrategy bstrategy)
+					 int elevel, BufferAccessStrategy bstrategy,
+					 Provenances *provenances)
 {
 	ParallelVacuumState *pvs;
 	ParallelContext *pcxt;
@@ -316,6 +322,9 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 	bool	   *will_parallel_vacuum;
 	Size		est_indstats_len;
 	Size		est_shared_len;
+	char	   *provenancesstr;
+	char	   *sharedprovenances;
+	int			provenanceslen;
 	int			nindexes_mwm = 0;
 	int			parallel_workers = 0;
 	int			querylen;
@@ -347,6 +356,7 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 	pvs->will_parallel_vacuum = will_parallel_vacuum;
 	pvs->bstrategy = bstrategy;
 	pvs->heaprel = rel;
+	pvs->provenances = provenances;
 
 	EnterParallelMode();
 	pcxt = CreateParallelContext("postgres", "parallel_vacuum_main",
@@ -379,7 +389,7 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 						   mul_size(sizeof(WalUsage), pcxt->nworkers));
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
-	/* Finally, estimate PARALLEL_VACUUM_KEY_QUERY_TEXT space */
+	/* Estimate PARALLEL_VACUUM_KEY_QUERY_TEXT space */
 	if (debug_query_string)
 	{
 		querylen = strlen(debug_query_string);
@@ -388,6 +398,12 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 	}
 	else
 		querylen = 0;			/* keep compiler quiet */
+
+	/* Estimate PARALLEL_VACUUM_KEY_PROVENANCES space */
+	provenancesstr = nodeToString(provenances);
+	provenanceslen = strlen(provenancesstr);
+	shm_toc_estimate_chunk(&pcxt->estimator, provenanceslen + 1);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
 	InitializeParallelDSM(pcxt);
 
@@ -497,6 +513,13 @@ parallel_vacuum_init(Relation rel, Relation *indrels, int nindexes,
 		shm_toc_insert(pcxt->toc,
 					   PARALLEL_VACUUM_KEY_QUERY_TEXT, sharedquery);
 	}
+
+	/* Store serialized provenances for workers */
+	sharedprovenances = shm_toc_allocate(pcxt->toc, provenanceslen + 1);
+	memcpy(sharedprovenances, provenancesstr, provenanceslen + 1);
+	shm_toc_insert(pcxt->toc,
+				   PARALLEL_VACUUM_KEY_PROVENANCES,
+				   sharedprovenances);
 
 	/* Success -- return parallel vacuum state */
 	return pvs;
@@ -1092,6 +1115,7 @@ parallel_vacuum_process_one_index(ParallelVacuumState *pvs, Relation indrel,
 	ivinfo.estimated_count = pvs->shared->estimated_count;
 	ivinfo.num_heap_tuples = pvs->shared->reltuples;
 	ivinfo.strategy = pvs->bstrategy;
+	ivinfo.provenances = pvs->provenances;
 
 	/* Update error traceback information */
 	pvs->indname = pstrdup(RelationGetRelationName(indrel));
@@ -1206,6 +1230,7 @@ parallel_vacuum_main(dsm_segment *seg, shm_toc *toc)
 	WalUsage   *wal_usage;
 	int			nindexes;
 	char	   *sharedquery;
+	char	   *provenancesstr;
 	ErrorContextCallback errcallback;
 
 	/*
@@ -1289,6 +1314,9 @@ parallel_vacuum_main(dsm_segment *seg, shm_toc *toc)
 	pvs.relnamespace = get_namespace_name(RelationGetNamespace(rel));
 	pvs.relname = pstrdup(RelationGetRelationName(rel));
 	pvs.heaprel = rel;
+	provenancesstr = shm_toc_lookup(toc, PARALLEL_VACUUM_KEY_PROVENANCES,
+									false);
+	pvs.provenances = stringToNode(provenancesstr, -1);
 
 	/* These fields will be filled during index vacuum or cleanup */
 	pvs.indname = NULL;

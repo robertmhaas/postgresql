@@ -74,7 +74,8 @@ extern int	make_partition_pruneinfo(PlannerInfo *root,
 									 RelOptInfo *parentrel,
 									 List *subpaths,
 									 List *prunequal);
-extern Bitmapset *prune_append_rel_partitions(RelOptInfo *rel);
+extern Bitmapset *prune_append_rel_partitions(RelOptInfo *rel,
+											  Provenances *provenances);
 extern Bitmapset *get_matching_partitions(PartitionPruneContext *context,
 										  List *pruning_steps);
 

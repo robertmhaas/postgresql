@@ -23,6 +23,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
 #include "parser/parse_func.h"
@@ -127,6 +128,8 @@ typedef struct SQLFunctionHashEntry
 	bool		returnsTuple;	/* true if returning whole tuple result */
 	bool		readonly_func;	/* true to run in "read only" mode */
 	char		prokind;		/* prokind from pg_proc row */
+
+	Provenances *provenances;	/* provenance chain for this function */
 
 	TupleDesc	rettupdesc;		/* result tuple descriptor */
 
@@ -904,6 +907,7 @@ prepare_next_query(SQLFunctionHashEntry *func)
 	bool		islast;
 	CachedPlanSource *plansource;
 	List	   *queryTree_list;
+	Provenances *provenances;
 	MemoryContext oldcontext;
 
 	/* Which query should we process? */
@@ -926,11 +930,13 @@ prepare_next_query(SQLFunctionHashEntry *func)
 		Query	   *parsetree = list_nth_node(Query, func->source_list, qindex);
 
 		parsetree = copyObject(parsetree);
+		provenances = copyObject(func->provenances);
 		plansource = CreateCachedPlanForQuery(parsetree,
 											  func->src,
-											  CreateCommandTag((Node *) parsetree));
+											  CreateCommandTag((Node *) parsetree),
+											  func->provenances);
 		AcquireRewriteLocks(parsetree, true, false);
-		queryTree_list = pg_rewrite_query(parsetree);
+		queryTree_list = pg_rewrite_query(parsetree, provenances);
 	}
 	else
 	{
@@ -938,14 +944,17 @@ prepare_next_query(SQLFunctionHashEntry *func)
 		RawStmt    *parsetree = list_nth_node(RawStmt, func->source_list, qindex);
 
 		parsetree = copyObject(parsetree);
+		provenances = copyObject(func->provenances);
 		plansource = CreateCachedPlan(parsetree,
 									  func->src,
-									  CreateCommandTag(parsetree->stmt));
+									  CreateCommandTag(parsetree->stmt),
+									  func->provenances);
 		queryTree_list = pg_analyze_and_rewrite_withcb(parsetree,
 													   func->src,
 													   (ParserSetupHook) sql_fn_parser_setup,
 													   func->pinfo,
-													   NULL);
+													   NULL,
+													   provenances);
 	}
 
 	/*
@@ -990,7 +999,8 @@ prepare_next_query(SQLFunctionHashEntry *func)
 					   (ParserSetupHook) sql_fn_parser_setup,
 					   func->pinfo,
 					   CURSOR_OPT_PARALLEL_OK | CURSOR_OPT_NO_SCROLL,
-					   false);
+					   false,
+					   provenances);
 
 	/*
 	 * Install post-rewrite hook.  Its arg is the hash entry if this is the
@@ -1137,6 +1147,13 @@ sql_compile_callback(FunctionCallInfo fcinfo,
 	for (int i = 0; i < func->pinfo->nargs; i++)
 		func->argtyplen[i] = get_typlen(func->pinfo->argtypes[i]);
 
+	/* We need provenances to deal with prosrc/prosqlbody. */
+	MemoryContextSwitchTo(hcontext);
+	func->provenances = InitProvenancesForCache(PROVENANCE_FUNCTION,
+												hashkey->funcOid,
+												procedureStruct->proowner);
+	MemoryContextSwitchTo(oldcontext);
+
 	/*
 	 * And of course we need the function body text.
 	 */
@@ -1154,7 +1171,7 @@ sql_compile_callback(FunctionCallInfo fcinfo,
 		/* Source queries are already parse-analyzed */
 		Node	   *n;
 
-		n = stringToNode(TextDatumGetCString(tmp));
+		n = stringToNode(TextDatumGetCString(tmp), 0);
 		if (IsA(n, List))
 			source_list = linitial_node(List, castNode(List, n));
 		else

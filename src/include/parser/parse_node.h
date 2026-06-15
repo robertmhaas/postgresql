@@ -15,6 +15,7 @@
 #define PARSE_NODE_H
 
 #include "nodes/parsenodes.h"
+#include "nodes/provenance.h"
 #include "utils/queryenvironment.h"
 #include "utils/relcache.h"
 
@@ -237,6 +238,8 @@ struct ParseState
 										 * with FOR UPDATE/FOR SHARE */
 	bool		p_resolve_unknowns; /* resolve unknown-type SELECT outputs as
 									 * type text */
+
+	Provenances *p_provenances; /* call source provenance */
 
 	QueryEnvironment *p_queryEnv;	/* curr env, incl refs to enclosing env */
 	GraphTableParseState *p_graph_table_pstate; /* Current graph table

@@ -6382,7 +6382,7 @@ array_unnest_support(PG_FUNCTION_ARGS)
 			Node	   *arg1;
 
 			/* We can use estimated argument values here */
-			arg1 = estimate_expression_value(req->root, linitial(args));
+			arg1 = estimate_expression_value(req->root, linitial(args), NULL);
 
 			req->rows = estimate_array_length(req->root, arg1);
 			ret = (Node *) req;

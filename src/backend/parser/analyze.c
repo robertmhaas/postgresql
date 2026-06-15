@@ -126,7 +126,8 @@ static bool test_raw_expression_coverage(Node *node, void *context);
 Query *
 parse_analyze_fixedparams(RawStmt *parseTree, const char *sourceText,
 						  const Oid *paramTypes, int numParams,
-						  QueryEnvironment *queryEnv)
+						  QueryEnvironment *queryEnv,
+						  Provenances *provenances)
 {
 	ParseState *pstate = make_parsestate(NULL);
 	Query	   *query;
@@ -135,6 +136,7 @@ parse_analyze_fixedparams(RawStmt *parseTree, const char *sourceText,
 	Assert(sourceText != NULL); /* required as of 8.4 */
 
 	pstate->p_sourcetext = sourceText;
+	pstate->p_provenances = provenances;
 
 	if (numParams > 0)
 		setup_parse_fixed_parameters(pstate, paramTypes, numParams);
@@ -166,7 +168,8 @@ parse_analyze_fixedparams(RawStmt *parseTree, const char *sourceText,
 Query *
 parse_analyze_varparams(RawStmt *parseTree, const char *sourceText,
 						Oid **paramTypes, int *numParams,
-						QueryEnvironment *queryEnv)
+						QueryEnvironment *queryEnv,
+						Provenances *provenances)
 {
 	ParseState *pstate = make_parsestate(NULL);
 	Query	   *query;
@@ -175,6 +178,7 @@ parse_analyze_varparams(RawStmt *parseTree, const char *sourceText,
 	Assert(sourceText != NULL); /* required as of 8.4 */
 
 	pstate->p_sourcetext = sourceText;
+	pstate->p_provenances = provenances;
 
 	setup_parse_variable_parameters(pstate, paramTypes, numParams);
 
@@ -208,7 +212,8 @@ Query *
 parse_analyze_withcb(RawStmt *parseTree, const char *sourceText,
 					 ParserSetupHook parserSetup,
 					 void *parserSetupArg,
-					 QueryEnvironment *queryEnv)
+					 QueryEnvironment *queryEnv,
+					 Provenances *provenances)
 {
 	ParseState *pstate = make_parsestate(NULL);
 	Query	   *query;
@@ -217,6 +222,7 @@ parse_analyze_withcb(RawStmt *parseTree, const char *sourceText,
 	Assert(sourceText != NULL); /* required as of 8.4 */
 
 	pstate->p_sourcetext = sourceText;
+	pstate->p_provenances = provenances;
 	pstate->p_queryEnv = queryEnv;
 	(*parserSetup) (pstate, parserSetupArg);
 
@@ -1334,6 +1340,10 @@ transformForPortionOfClause(ParseState *pstate,
 	OpExpr	   *op;
 	ForPortionOfExpr *result;
 	Var		   *rangeVar;
+	ProvenanceIndex column_pidx;
+	ProvenanceIndex type_pidx;
+	ProvenanceIndex opclass_pidx;
+	ProvenanceIndex opfamily_pidx;
 
 	/* We don't support FOR PORTION OF FDW queries. */
 	if (targetrel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
@@ -1353,6 +1363,15 @@ transformForPortionOfClause(ParseState *pstate,
 						RelationGetRelationName(targetrel)),
 				 parser_errposition(pstate, forPortionOf->location)));
 	attr = TupleDescAttr(targetrel->rd_att, range_attno - 1);
+
+	column_pidx = ProvenanceForColumn(pstate->p_provenances,
+									  RelationGetRelid(targetrel),
+									  targetrel->rd_rel->relowner,
+									  0);
+	type_pidx = ProvenanceForType(pstate->p_provenances,
+								  attr->atttypid,
+								  get_typowner(attr->atttypid),
+								  column_pidx);
 
 	attbasetype = getBaseType(attr->atttypid);
 
@@ -1428,6 +1447,8 @@ transformForPortionOfClause(ParseState *pstate,
 		Oid			declared_arg_types[2];
 		Oid			actual_arg_types[2];
 		List	   *args;
+		Oid			rngconstructor2;
+		ProvenanceIndex pidx;
 
 		/*
 		 * Make sure it's a range column. XXX: We could support this syntax on
@@ -1484,12 +1505,23 @@ transformForPortionOfClause(ParseState *pstate,
 					 parser_errposition(pstate, exprLocation(forPortionOf->target_end))));
 
 		make_fn_arguments(pstate, args, actual_arg_types, declared_arg_types);
-		result->targetRange = (Node *) makeFuncExpr(get_range_constructor2(attbasetype),
+		rngconstructor2 = get_range_constructor2(attbasetype);
+		if (attbasetype == attr->atttypid)
+			pidx = type_pidx;
+		else
+			pidx = ProvenanceForType(pstate->p_provenances,
+									 attbasetype,
+									 get_typowner(attbasetype),
+									 type_pidx);
+		result->targetRange = (Node *) makeFuncExpr(rngconstructor2,
 													attbasetype,
 													args,
-													InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+													InvalidOid, InvalidOid,
+													COERCE_EXPLICIT_CALL,
+													pidx);
 	}
-	if (contain_volatile_functions_after_planning((Expr *) result->targetRange))
+	if (contain_volatile_functions_after_planning((Expr *) result->targetRange,
+												  pstate->p_provenances))
 		ereport(ERROR,
 				(errmsg("FOR PORTION OF bounds cannot contain volatile functions")));
 
@@ -1506,13 +1538,30 @@ transformForPortionOfClause(ParseState *pstate,
 						format_type_be(attr->atttypid), "gist"),
 				 errhint("You must define a default operator class for the data type.")));
 
-	/* Look up the operators and functions we need. */
-	GetOperatorFromCompareType(opclass, InvalidOid, COMPARE_OVERLAP, &opid, &strat);
+	/* PROVENANCE-TODO: Don't use BOOTSTRAP_SUPERUSERID here. */
+	opclass_pidx = ProvenanceForOpclass(pstate->p_provenances,
+										opclass,
+										BOOTSTRAP_SUPERUSERID,
+										type_pidx);
+
+	/* Look up the correct operator */
+	GetOperatorFromCompareType(opclass, InvalidOid, COMPARE_OVERLAP,
+							   &opid, &strat, &opfamily);
+	/* PROVENANCE-TODO: Don't use BOOTSTRAP_SUPERUSERID here. */
+	opfamily_pidx = ProvenanceForOpfamily(pstate->p_provenances,
+										  opfamily,
+										  BOOTSTRAP_SUPERUSERID,
+										  opclass_pidx);
+
+	/* Now create an OpExpr for this operator */
 	op = makeNode(OpExpr);
 	op->opno = opid;
 	op->opfuncid = get_opcode(opid);
 	op->opresulttype = BOOLOID;
 	op->args = list_make2(copyObject(rangeVar), copyObject(result->targetRange));
+	op->pidx = ProvenanceForOperator(pstate->p_provenances, opid,
+									 BOOTSTRAP_SUPERUSERID, /* PROVENANCE-TODO */
+									 opfamily_pidx);
 	result->overlapsExpr = (Node *) op;
 
 	/*
@@ -1576,9 +1625,16 @@ transformForPortionOfClause(ParseState *pstate,
 
 		funcArgs = list_make2(copyObject(rangeVar),
 							  copyObject(result->targetRange));
+
+		/*
+		 * Since we choose the function to call based on the opclass's input
+		 * type, the provenance of this function call should point back to the
+		 * opclass.
+		 */
 		rangeTLEExpr = (Node *) makeFuncExpr(funcid, attbasetype, funcArgs,
 											 InvalidOid, InvalidOid,
-											 COERCE_EXPLICIT_CALL);
+											 COERCE_EXPLICIT_CALL,
+											 opclass_pidx);
 
 		/*
 		 * Coerce to domain if necessary. If we skip this, we will allow
@@ -3637,7 +3693,8 @@ transformCallStmt(ParseState *pstate, CallStmt *stmt)
 	fexpr->args = expand_function_arguments(fexpr->args,
 											true,
 											fexpr->funcresulttype,
-											proctup);
+											proctup,
+											pstate->p_provenances);
 
 	/* Fetch proargmodes; if it's null, there are no output args */
 	proargmodes = SysCacheGetAttr(PROCOID, proctup,

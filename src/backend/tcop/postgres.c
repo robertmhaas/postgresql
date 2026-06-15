@@ -683,7 +683,8 @@ pg_analyze_and_rewrite_fixedparams(RawStmt *parsetree,
 								   const char *query_string,
 								   const Oid *paramTypes,
 								   int numParams,
-								   QueryEnvironment *queryEnv)
+								   QueryEnvironment *queryEnv,
+								   Provenances *provenances)
 {
 	Query	   *query;
 	List	   *querytree_list;
@@ -696,8 +697,8 @@ pg_analyze_and_rewrite_fixedparams(RawStmt *parsetree,
 	if (log_parser_stats)
 		ResetUsage();
 
-	query = parse_analyze_fixedparams(parsetree, query_string, paramTypes, numParams,
-									  queryEnv);
+	query = parse_analyze_fixedparams(parsetree, query_string, paramTypes,
+									  numParams, queryEnv, provenances);
 
 	if (log_parser_stats)
 		ShowUsage("PARSE ANALYSIS STATISTICS");
@@ -705,7 +706,7 @@ pg_analyze_and_rewrite_fixedparams(RawStmt *parsetree,
 	/*
 	 * (2) Rewrite the queries, as necessary
 	 */
-	querytree_list = pg_rewrite_query(query);
+	querytree_list = pg_rewrite_query(query, provenances);
 
 	TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
 
@@ -722,7 +723,8 @@ pg_analyze_and_rewrite_varparams(RawStmt *parsetree,
 								 const char *query_string,
 								 Oid **paramTypes,
 								 int *numParams,
-								 QueryEnvironment *queryEnv)
+								 QueryEnvironment *queryEnv,
+								 Provenances *provenances)
 {
 	Query	   *query;
 	List	   *querytree_list;
@@ -735,8 +737,8 @@ pg_analyze_and_rewrite_varparams(RawStmt *parsetree,
 	if (log_parser_stats)
 		ResetUsage();
 
-	query = parse_analyze_varparams(parsetree, query_string, paramTypes, numParams,
-									queryEnv);
+	query = parse_analyze_varparams(parsetree, query_string, paramTypes,
+									numParams, queryEnv, provenances);
 
 	/*
 	 * Check all parameter types got determined.
@@ -758,7 +760,7 @@ pg_analyze_and_rewrite_varparams(RawStmt *parsetree,
 	/*
 	 * (2) Rewrite the queries, as necessary
 	 */
-	querytree_list = pg_rewrite_query(query);
+	querytree_list = pg_rewrite_query(query, provenances);
 
 	TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
 
@@ -776,7 +778,8 @@ pg_analyze_and_rewrite_withcb(RawStmt *parsetree,
 							  const char *query_string,
 							  ParserSetupHook parserSetup,
 							  void *parserSetupArg,
-							  QueryEnvironment *queryEnv)
+							  QueryEnvironment *queryEnv,
+							  Provenances *provenances)
 {
 	Query	   *query;
 	List	   *querytree_list;
@@ -789,8 +792,8 @@ pg_analyze_and_rewrite_withcb(RawStmt *parsetree,
 	if (log_parser_stats)
 		ResetUsage();
 
-	query = parse_analyze_withcb(parsetree, query_string, parserSetup, parserSetupArg,
-								 queryEnv);
+	query = parse_analyze_withcb(parsetree, query_string, parserSetup,
+								 parserSetupArg, queryEnv, provenances);
 
 	if (log_parser_stats)
 		ShowUsage("PARSE ANALYSIS STATISTICS");
@@ -798,7 +801,7 @@ pg_analyze_and_rewrite_withcb(RawStmt *parsetree,
 	/*
 	 * (2) Rewrite the queries, as necessary
 	 */
-	querytree_list = pg_rewrite_query(query);
+	querytree_list = pg_rewrite_query(query, provenances);
 
 	TRACE_POSTGRESQL_QUERY_REWRITE_DONE(query_string);
 
@@ -812,7 +815,7 @@ pg_analyze_and_rewrite_withcb(RawStmt *parsetree,
  * AcquireRewriteLocks() on it.
  */
 List *
-pg_rewrite_query(Query *query)
+pg_rewrite_query(Query *query, Provenances *provenances)
 {
 	List	   *querytree_list;
 
@@ -831,7 +834,7 @@ pg_rewrite_query(Query *query)
 	else
 	{
 		/* rewrite regular queries */
-		querytree_list = QueryRewrite(query);
+		querytree_list = QueryRewrite(query, provenances);
 	}
 
 	if (log_parser_stats)
@@ -897,7 +900,8 @@ pg_rewrite_query(Query *query)
  */
 PlannedStmt *
 pg_plan_query(Query *querytree, const char *query_string, int cursorOptions,
-			  ParamListInfo boundParams, ExplainState *es)
+			  ParamListInfo boundParams, ExplainState *es,
+			  Provenances *provenances)
 {
 	PlannedStmt *plan;
 
@@ -914,7 +918,8 @@ pg_plan_query(Query *querytree, const char *query_string, int cursorOptions,
 		ResetUsage();
 
 	/* call the optimizer */
-	plan = planner(querytree, query_string, cursorOptions, boundParams, es);
+	plan = planner(querytree, query_string, cursorOptions, boundParams, es,
+				   provenances);
 
 	if (log_planner_stats)
 		ShowUsage("PLANNER STATISTICS");
@@ -985,7 +990,7 @@ pg_plan_query(Query *querytree, const char *query_string, int cursorOptions,
  */
 List *
 pg_plan_queries(List *querytrees, const char *query_string, int cursorOptions,
-				ParamListInfo boundParams)
+				ParamListInfo boundParams, Provenances *provenances)
 {
 	List	   *stmt_list = NIL;
 	ListCell   *query_list;
@@ -1005,12 +1010,13 @@ pg_plan_queries(List *querytrees, const char *query_string, int cursorOptions,
 			stmt->stmt_location = query->stmt_location;
 			stmt->stmt_len = query->stmt_len;
 			stmt->queryId = query->queryId;
+			stmt->provenances = provenances;
 			stmt->planOrigin = PLAN_STMT_INTERNAL;
 		}
 		else
 		{
 			stmt = pg_plan_query(query, query_string, cursorOptions,
-								 boundParams, NULL);
+								 boundParams, NULL, provenances);
 		}
 
 		stmt_list = lappend(stmt_list, stmt);
@@ -1123,6 +1129,7 @@ exec_simple_query(const char *query_string)
 		int16		format;
 		const char *cmdtagname;
 		size_t		cmdtaglen;
+		Provenances *provenances;
 
 		pgstat_report_query_id(0, true);
 		pgstat_report_plan_id(0, true);
@@ -1203,11 +1210,15 @@ exec_simple_query(const char *query_string)
 		else
 			oldcontext = MemoryContextSwitchTo(MessageContext);
 
-		querytree_list = pg_analyze_and_rewrite_fixedparams(parsetree, query_string,
-															NULL, 0, NULL);
+		provenances = InitProvenancesForSession();
+		querytree_list =
+			pg_analyze_and_rewrite_fixedparams(parsetree, query_string,
+											   NULL, 0, NULL,
+											   provenances);
 
 		plantree_list = pg_plan_queries(querytree_list, query_string,
-										CURSOR_OPT_PARALLEL_OK, NULL);
+										CURSOR_OPT_PARALLEL_OK, NULL,
+										provenances);
 
 		/*
 		 * Done with the snapshot used for parsing/planning.
@@ -1417,6 +1428,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 	bool		is_named;
 	bool		save_log_statement_stats = log_statement_stats;
 	char		msec_str[32];
+	Provenances *provenances = NULL;
 
 	/*
 	 * Report query to various monitoring facilities.
@@ -1512,11 +1524,20 @@ exec_parse_message(const char *query_string,	/* string to execute */
 							"commands ignored until end of transaction block")));
 
 		/*
+		 * This command originated directly from the user's session.
+		 *
+		 * We defer setting up the provenances until this point so that no
+		 * allocation is performed if the query is empty.
+		 */
+		provenances = InitProvenancesForSession();
+
+		/*
 		 * Create the CachedPlanSource before we do parse analysis, since it
 		 * needs to see the unmodified raw parse tree.
 		 */
 		psrc = CreateCachedPlan(raw_parse_tree, query_string,
-								CreateCommandTag(raw_parse_tree->stmt));
+								CreateCommandTag(raw_parse_tree->stmt),
+								provenances);
 
 		/*
 		 * Set up a snapshot if parse analysis will need one.
@@ -1536,7 +1557,8 @@ exec_parse_message(const char *query_string,	/* string to execute */
 														  query_string,
 														  &paramTypes,
 														  &numParams,
-														  NULL);
+														  NULL,
+														  provenances);
 
 		/* Done with the snapshot used for parsing */
 		if (snapshot_set)
@@ -1547,7 +1569,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		/* Empty input string.  This is legal. */
 		raw_parse_tree = NULL;
 		psrc = CreateCachedPlan(raw_parse_tree, query_string,
-								CMDTAG_UNKNOWN);
+								CMDTAG_UNKNOWN, provenances);
 		querytree_list = NIL;
 	}
 
@@ -1569,7 +1591,8 @@ exec_parse_message(const char *query_string,	/* string to execute */
 					   NULL,
 					   NULL,
 					   CURSOR_OPT_PARALLEL_OK,	/* allow parallel mode */
-					   true);	/* fixed result */
+					   true,	/* fixed result */
+					   provenances);
 
 	/* If we got a cancel signal during analysis, quit */
 	CHECK_FOR_INTERRUPTS();

@@ -81,9 +81,13 @@ static void propgraph_edge_get_ref_keys(ParseState *pstate, const List *keycols,
 										ArrayType **outkey, ArrayType **outref, ArrayType **outeqop);
 static AttrNumber *array_from_column_list(ParseState *pstate, const List *colnames, int location, Relation element_rel);
 static ArrayType *array_from_attnums(int numattrs, const AttrNumber *attnums);
-static Oid	insert_element_record(ObjectAddress pgaddress, struct element_info *einfo);
+static Oid	insert_element_record(ObjectAddress pgaddress,
+								  struct element_info *einfo,
+								  Provenances *provenances);
 static Oid	insert_label_record(Oid graphid, Oid peoid, const char *label);
-static void insert_property_records(Oid graphid, Oid ellabeloid, Oid pgerelid, const PropGraphProperties *properties);
+static void insert_property_records(Oid graphid, Oid ellabeloid, Oid pgerelid,
+									const PropGraphProperties *properties,
+									Provenances *provenances);
 static void insert_property_record(Oid graphid, Oid ellabeloid, Oid pgerelid, const char *propname, const Expr *expr);
 static void check_element_properties(Oid peoid);
 static void check_element_label_properties(Oid ellabeloid);
@@ -261,14 +265,15 @@ CreatePropGraph(ParseState *pstate, const CreatePropGraphStmt *stmt)
 						stmt->pgname->relname)));
 	}
 
-	pgaddress = DefineRelation(cstmt, RELKIND_PROPGRAPH, InvalidOid, NULL, NULL);
+	pgaddress = DefineRelation(pstate, cstmt, RELKIND_PROPGRAPH,
+							   InvalidOid, NULL, NULL);
 
 	foreach(lc, vertex_infos)
 	{
 		struct element_info *vinfo = lfirst(lc);
 		Oid			peoid;
 
-		peoid = insert_element_record(pgaddress, vinfo);
+		peoid = insert_element_record(pgaddress, vinfo, pstate->p_provenances);
 		element_oids = lappend_oid(element_oids, peoid);
 	}
 
@@ -303,7 +308,8 @@ CreatePropGraph(ParseState *pstate, const CreatePropGraphStmt *stmt)
 		Assert(einfo->destvertexid);
 		Assert(einfo->srcrelid);
 		Assert(einfo->destrelid);
-		peoid = insert_element_record(pgaddress, einfo);
+		peoid = insert_element_record(pgaddress, einfo,
+									  pstate->p_provenances);
 		element_oids = lappend_oid(element_oids, peoid);
 	}
 
@@ -609,7 +615,8 @@ array_of_opers_to_objectaddrs(ArrayType *arr, ObjectAddresses *addrs)
  * inserts labels and properties into their respective catalogs.
  */
 static Oid
-insert_element_record(ObjectAddress pgaddress, struct element_info *einfo)
+insert_element_record(ObjectAddress pgaddress, struct element_info *einfo,
+					  Provenances *provenances)
 {
 	Oid			graphid = pgaddress.objectId;
 	Relation	rel;
@@ -715,7 +722,8 @@ insert_element_record(ObjectAddress pgaddress, struct element_info *einfo)
 				ellabeloid = insert_label_record(graphid, peoid, lp->label);
 			else
 				ellabeloid = insert_label_record(graphid, peoid, einfo->aliasname);
-			insert_property_records(graphid, ellabeloid, einfo->relid, lp->properties);
+			insert_property_records(graphid, ellabeloid, einfo->relid,
+									lp->properties, provenances);
 
 			CommandCounterIncrement();
 		}
@@ -729,7 +737,8 @@ insert_element_record(ObjectAddress pgaddress, struct element_info *einfo)
 		pr->location = -1;
 
 		ellabeloid = insert_label_record(graphid, peoid, einfo->aliasname);
-		insert_property_records(graphid, ellabeloid, einfo->relid, pr);
+		insert_property_records(graphid, ellabeloid, einfo->relid, pr,
+								provenances);
 	}
 
 	return peoid;
@@ -820,7 +829,9 @@ insert_label_record(Oid graphid, Oid peoid, const char *label)
  * Insert records for properties into the pg_propgraph_property catalog.
  */
 static void
-insert_property_records(Oid graphid, Oid ellabeloid, Oid pgerelid, const PropGraphProperties *properties)
+insert_property_records(Oid graphid, Oid ellabeloid, Oid pgerelid,
+						const PropGraphProperties *properties,
+						Provenances *provenances)
 {
 	List	   *proplist = NIL;
 	ParseState *pstate;
@@ -886,6 +897,7 @@ insert_property_records(Oid graphid, Oid ellabeloid, Oid pgerelid, const PropGra
 	rel = table_open(pgerelid, AccessShareLock);
 
 	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
 	nsitem = addRangeTableEntryForRelation(pstate,
 										   rel,
 										   AccessShareLock,
@@ -1103,8 +1115,9 @@ check_element_properties(Oid peoid)
 					Node	   *na,
 							   *nb;
 
-					na = stringToNode(propexpr);
-					nb = stringToNode(lfirst(lc2));
+					/* PROVENANCE-TODO: What should we be passing here? */
+					na = stringToNode(propexpr, -2);
+					nb = stringToNode(lfirst(lc2), -2);
 
 					found = true;
 
@@ -1350,7 +1363,8 @@ AlterPropGraph(ParseState *pstate, const AlterPropGraphStmt *stmt)
 						   vinfo->aliasname, stmt->pgname->relname),
 					parser_errposition(pstate, vertex->vtable->location));
 
-		peoid = insert_element_record(pgaddress, vinfo);
+		peoid = insert_element_record(pgaddress, vinfo,
+									  pstate->p_provenances);
 
 		CommandCounterIncrement();
 		check_element_properties(peoid);
@@ -1419,7 +1433,8 @@ AlterPropGraph(ParseState *pstate, const AlterPropGraphStmt *stmt)
 						   einfo->aliasname, stmt->pgname->relname),
 					parser_errposition(pstate, edge->etable->location));
 
-		peoid = insert_element_record(pgaddress, einfo);
+		peoid = insert_element_record(pgaddress, einfo,
+									  pstate->p_provenances);
 
 		CommandCounterIncrement();
 		check_element_properties(peoid);
@@ -1480,7 +1495,8 @@ AlterPropGraph(ParseState *pstate, const AlterPropGraphStmt *stmt)
 		pgerelid = get_element_relid(peoid);
 
 		ellabeloid = insert_label_record(pgrelid, peoid, lp->label);
-		insert_property_records(pgrelid, ellabeloid, pgerelid, lp->properties);
+		insert_property_records(pgrelid, ellabeloid, pgerelid,
+								lp->properties, pstate->p_provenances);
 
 		CommandCounterIncrement();
 		check_element_properties(peoid);
@@ -1569,7 +1585,9 @@ AlterPropGraph(ParseState *pstate, const AlterPropGraphStmt *stmt)
 
 		pgerelid = get_element_relid(peoid);
 
-		insert_property_records(pgrelid, ellabeloid, pgerelid, stmt->add_properties);
+		insert_property_records(pgrelid, ellabeloid, pgerelid,
+								stmt->add_properties,
+								pstate->p_provenances);
 
 		CommandCounterIncrement();
 		check_element_properties(peoid);

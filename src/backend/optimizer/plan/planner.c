@@ -37,6 +37,7 @@
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
 #endif
+#include "nodes/provenance.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
@@ -331,16 +332,17 @@ static void create_partial_unique_paths(PlannerInfo *root, RelOptInfo *input_rel
  *****************************************************************************/
 PlannedStmt *
 planner(Query *parse, const char *query_string, int cursorOptions,
-		ParamListInfo boundParams, ExplainState *es)
+		ParamListInfo boundParams, ExplainState *es,
+		Provenances *provenances)
 {
 	PlannedStmt *result;
 
 	if (planner_hook)
 		result = (*planner_hook) (parse, query_string, cursorOptions,
-								  boundParams, es);
+								  boundParams, es, provenances);
 	else
 		result = standard_planner(parse, query_string, cursorOptions,
-								  boundParams, es);
+								  boundParams, es, provenances);
 
 	pgstat_report_plan_id(result->planId, false);
 
@@ -349,7 +351,8 @@ planner(Query *parse, const char *query_string, int cursorOptions,
 
 PlannedStmt *
 standard_planner(Query *parse, const char *query_string, int cursorOptions,
-				 ParamListInfo boundParams, ExplainState *es)
+				 ParamListInfo boundParams, ExplainState *es,
+				 Provenances *provenances)
 {
 	PlannedStmt *result;
 	PlannerGlobal *glob;
@@ -361,6 +364,8 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	ListCell   *lp,
 			   *lr,
 			   *lc;
+
+	Assert(provenances != NULL);
 
 	/*
 	 * Set up global state for this planner invocation.  This data is needed
@@ -385,6 +390,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	glob->partPruneInfos = NIL;
 	glob->relationOids = NIL;
 	glob->invalItems = NIL;
+	glob->provenances = provenances;
 	glob->paramExecTypes = NIL;
 	glob->lastPHId = 0;
 	glob->lastRowMarkId = 0;
@@ -661,6 +667,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 
 	result->commandType = parse->commandType;
 	result->queryId = parse->queryId;
+	result->provenances = glob->provenances;
 	result->planOrigin = PLAN_STMT_STANDARD;
 	result->hasReturning = (parse->returningList != NIL);
 	result->hasModifyingCTE = parse->hasModifyingCTE;
@@ -1450,7 +1457,8 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
 	 * with AND directly under AND, nor OR directly under OR.
 	 */
 	if (kind != EXPRKIND_RTFUNC)
-		expr = eval_const_expressions(root, expr);
+		expr = eval_const_expressions(root, expr,
+									  root->glob->provenances);
 
 	/*
 	 * If it's a qual or havingQual, canonicalize it.
@@ -2931,7 +2939,8 @@ preprocess_limit(PlannerInfo *root, double tuple_fraction,
 	 */
 	if (parse->limitCount)
 	{
-		est = estimate_expression_value(root, parse->limitCount);
+		est = estimate_expression_value(root, parse->limitCount,
+										NULL);
 		if (est && IsA(est, Const))
 		{
 			if (((Const *) est)->constisnull)
@@ -2954,7 +2963,8 @@ preprocess_limit(PlannerInfo *root, double tuple_fraction,
 
 	if (parse->limitOffset)
 	{
-		est = estimate_expression_value(root, parse->limitOffset);
+		est = estimate_expression_value(root, parse->limitOffset,
+										NULL);
 		if (est && IsA(est, Const))
 		{
 			if (((Const *) est)->constisnull)
@@ -7078,15 +7088,17 @@ adjust_paths_for_srfs(PlannerInfo *root, RelOptInfo *rel,
  * context; beware that this can leak a lot of additional stuff there, too.
  */
 Expr *
-expression_planner(Expr *expr)
+expression_planner(Expr *expr, Provenances *provenances)
 {
 	Node	   *result;
+
+	Assert(provenances != NULL);
 
 	/*
 	 * Convert named-argument function calls, insert default arguments and
 	 * simplify constant subexprs
 	 */
-	result = eval_const_expressions(NULL, (Node *) expr);
+	result = eval_const_expressions(NULL, (Node *) expr, provenances);
 
 	/* Fill in opfuncid values if missing */
 	fix_opfuncids(result);
@@ -7107,7 +7119,8 @@ expression_planner(Expr *expr)
 Expr *
 expression_planner_with_deps(Expr *expr,
 							 List **relationOids,
-							 List **invalItems)
+							 List **invalItems,
+							 Provenances *provenances)
 {
 	Node	   *result;
 	PlannerGlobal glob;
@@ -7128,7 +7141,8 @@ expression_planner_with_deps(Expr *expr,
 	 * simplify constant subexprs.  Collect identities of inlined functions
 	 * and elided domains, too.
 	 */
-	result = eval_const_expressions(&root, (Node *) expr);
+	result = eval_const_expressions(&root, (Node *) expr,
+									provenances);
 
 	/* Fill in opfuncid values if missing */
 	fix_opfuncids(result);

@@ -190,7 +190,9 @@ extern Oid	getExtensionType(Oid extensionOid, const char *typname);
 
 extern bool sequenceIsOwned(Oid seqId, char deptype, Oid *tableId, int32 *colId);
 extern List *getOwnedSequences(Oid relid);
-extern Oid	getIdentitySequence(Relation rel, AttrNumber attnum, bool missing_ok);
+extern Oid	getIdentitySequence(Relation rel, AttrNumber attnum,
+								bool missing_ok,
+								Oid *identity_relid);
 
 extern Oid	get_index_constraint(Oid indexId);
 

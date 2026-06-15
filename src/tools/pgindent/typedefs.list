@@ -2451,6 +2451,11 @@ PropGraphLabelAndProperties
 PropGraphProperties
 PropGraphVertex
 ProtocolVersion
+Provenance
+ProvenanceEntry
+ProvenanceIndex
+ProvenanceKind
+Provenances
 PrsStorage
 PruneFreezeParams
 PruneFreezeResult

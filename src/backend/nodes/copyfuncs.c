@@ -160,6 +160,20 @@ _copyExtensibleNode(const ExtensibleNode *from)
 	return newnode;
 }
 
+static Provenances *
+_copyProvenances(const Provenances *from)
+{
+	Provenances *newnode = makeNode(Provenances);
+
+	newnode->length = from->length;
+	newnode->max_length = from->length;
+	newnode->entries = palloc_array(ProvenanceEntry, from->length);
+	memcpy(newnode->entries, from->entries,
+		   from->length * sizeof(ProvenanceEntry));
+
+	return newnode;
+}
+
 static Bitmapset *
 _copyBitmapset(const Bitmapset *from)
 {

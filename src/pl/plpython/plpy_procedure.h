@@ -6,6 +6,7 @@
 #define PLPY_PROCEDURE_H
 
 #include "plpy_typeio.h"
+#include "nodes/provenance.h"
 
 
 extern void init_procedure_caches(void);
@@ -41,6 +42,7 @@ typedef struct PLyProcedure
 	TransactionId fn_xmin;
 	ItemPointerData fn_tid;
 	bool		fn_readonly;
+	Provenances *provenances;
 	bool		is_setof;		/* true, if function returns result set */
 	bool		is_procedure;
 	PLyTrigType is_trigger;		/* called as trigger? */

@@ -41,8 +41,8 @@ static void checkViewColumns(TupleDesc newdesc, TupleDesc olddesc);
  *---------------------------------------------------------------------
  */
 static ObjectAddress
-DefineVirtualRelation(RangeVar *relation, List *tlist, bool replace,
-					  List *options, Query *viewParse)
+DefineVirtualRelation(ParseState *pstate, RangeVar *relation, List *tlist,
+					  bool replace, List *options, Query *viewParse)
 {
 	Oid			viewOid;
 	LOCKMODE	lockmode;
@@ -242,8 +242,8 @@ DefineVirtualRelation(RangeVar *relation, List *tlist, bool replace,
 		 * view, so we don't need more code to complain if "replace" is
 		 * false).
 		 */
-		address = DefineRelation(createStmt, RELKIND_VIEW, InvalidOid, NULL,
-								 NULL);
+		address = DefineRelation(pstate, createStmt, RELKIND_VIEW,
+								 InvalidOid, NULL, NULL);
 		Assert(address.objectId != InvalidOid);
 
 		/* Make the new view relation visible */
@@ -352,7 +352,7 @@ DefineViewRules(Oid viewOid, Query *viewParse, bool replace)
  *		Execute a CREATE VIEW command.
  */
 ObjectAddress
-DefineView(ViewStmt *stmt, const char *queryString,
+DefineView(ParseState *pstate, ViewStmt *stmt, const char *queryString,
 		   int stmt_location, int stmt_len)
 {
 	RawStmt    *rawstmt;
@@ -372,7 +372,9 @@ DefineView(ViewStmt *stmt, const char *queryString,
 	rawstmt->stmt_location = stmt_location;
 	rawstmt->stmt_len = stmt_len;
 
-	viewParse = parse_analyze_fixedparams(rawstmt, queryString, NULL, 0, NULL);
+	viewParse = parse_analyze_fixedparams(rawstmt, queryString,
+										  NULL, 0, NULL,
+										  pstate->p_provenances);
 
 	/*
 	 * The grammar should ensure that the result is a single SELECT Query.
@@ -500,7 +502,7 @@ DefineView(ViewStmt *stmt, const char *queryString,
 	 * NOTE: if it already exists and replace is false, the xact will be
 	 * aborted.
 	 */
-	address = DefineVirtualRelation(view, viewParse->targetList,
+	address = DefineVirtualRelation(pstate, view, viewParse->targetList,
 									stmt->replace, stmt->options, viewParse);
 
 	return address;

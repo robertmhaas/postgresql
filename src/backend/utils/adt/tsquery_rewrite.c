@@ -304,7 +304,8 @@ tsquery_rewrite_query(PG_FUNCTION_ARGS)
 
 	SPI_connect();
 
-	if ((plan = SPI_prepare(buf, 0, NULL)) == NULL)
+	if ((plan = SPI_prepare(buf, 0, NULL,
+							InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner))) == NULL)
 		elog(ERROR, "SPI_prepare(\"%s\") failed", buf);
 
 	if ((portal = SPI_cursor_open(NULL, plan, NULL, NULL, true)) == NULL)

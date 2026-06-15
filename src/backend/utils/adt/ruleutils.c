@@ -69,6 +69,7 @@
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
+#include "nodes/provenance.h"
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
@@ -356,11 +357,13 @@ static char *deparse_expression_pretty(Node *expr, List *dpcontext,
 									   bool forceprefix, bool showimplicit,
 									   int prettyFlags, int startIndent);
 static char *pg_get_viewdef_worker(Oid viewoid,
-								   int prettyFlags, int wrapColumn);
+								   int prettyFlags, int wrapColumn,
+								   Provenances *provenances);
 static char *pg_get_triggerdef_worker(Oid trigid, bool pretty);
 static int	decompile_column_index_array(Datum column_index_array, Oid relId,
 										 bool withPeriod, StringInfo buf);
-static char *pg_get_ruledef_worker(Oid ruleoid, int prettyFlags);
+static char *pg_get_ruledef_worker(Oid ruleoid, int prettyFlags,
+								   Provenances *provenances);
 static char *pg_get_indexdef_worker(Oid indexrelid, int colno,
 									const Oid *excludeOps,
 									bool attrsOnly, bool keysOnly,
@@ -576,7 +579,8 @@ pg_get_ruledef(PG_FUNCTION_ARGS)
 
 	prettyFlags = PRETTYFLAG_INDENT;
 
-	res = pg_get_ruledef_worker(ruleoid, prettyFlags);
+	res = pg_get_ruledef_worker(ruleoid, prettyFlags,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -595,7 +599,8 @@ pg_get_ruledef_ext(PG_FUNCTION_ARGS)
 
 	prettyFlags = GET_PRETTY_FLAGS(pretty);
 
-	res = pg_get_ruledef_worker(ruleoid, prettyFlags);
+	res = pg_get_ruledef_worker(ruleoid, prettyFlags,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -605,7 +610,8 @@ pg_get_ruledef_ext(PG_FUNCTION_ARGS)
 
 
 static char *
-pg_get_ruledef_worker(Oid ruleoid, int prettyFlags)
+pg_get_ruledef_worker(Oid ruleoid, int prettyFlags,
+					  Provenances *provenances)
 {
 	Datum		args[1];
 	char		nulls[1];
@@ -635,7 +641,8 @@ pg_get_ruledef_worker(Oid ruleoid, int prettyFlags)
 		SPIPlanPtr	plan;
 
 		argtypes[0] = OIDOID;
-		plan = SPI_prepare(query_getrulebyoid, 1, argtypes);
+		plan = SPI_prepare(query_getrulebyoid, 1, argtypes,
+						   provenances);
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare failed for \"%s\"", query_getrulebyoid);
 		SPI_keepplan(plan);
@@ -695,7 +702,9 @@ pg_get_viewdef(PG_FUNCTION_ARGS)
 
 	prettyFlags = PRETTYFLAG_INDENT;
 
-	res = pg_get_viewdef_worker(viewoid, prettyFlags, WRAP_COLUMN_DEFAULT);
+	res = pg_get_viewdef_worker(viewoid, prettyFlags,
+								WRAP_COLUMN_DEFAULT,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -715,7 +724,9 @@ pg_get_viewdef_ext(PG_FUNCTION_ARGS)
 
 	prettyFlags = GET_PRETTY_FLAGS(pretty);
 
-	res = pg_get_viewdef_worker(viewoid, prettyFlags, WRAP_COLUMN_DEFAULT);
+	res = pg_get_viewdef_worker(viewoid, prettyFlags,
+								WRAP_COLUMN_DEFAULT,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -735,7 +746,8 @@ pg_get_viewdef_wrap(PG_FUNCTION_ARGS)
 	/* calling this implies we want pretty printing */
 	prettyFlags = GET_PRETTY_FLAGS(true);
 
-	res = pg_get_viewdef_worker(viewoid, prettyFlags, wrap);
+	res = pg_get_viewdef_worker(viewoid, prettyFlags, wrap,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -759,7 +771,9 @@ pg_get_viewdef_name(PG_FUNCTION_ARGS)
 	viewrel = makeRangeVarFromNameList(textToQualifiedNameList(viewname));
 	viewoid = RangeVarGetRelid(viewrel, NoLock, false);
 
-	res = pg_get_viewdef_worker(viewoid, prettyFlags, WRAP_COLUMN_DEFAULT);
+	res = pg_get_viewdef_worker(viewoid, prettyFlags,
+								WRAP_COLUMN_DEFAULT,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -785,7 +799,9 @@ pg_get_viewdef_name_ext(PG_FUNCTION_ARGS)
 	viewrel = makeRangeVarFromNameList(textToQualifiedNameList(viewname));
 	viewoid = RangeVarGetRelid(viewrel, NoLock, false);
 
-	res = pg_get_viewdef_worker(viewoid, prettyFlags, WRAP_COLUMN_DEFAULT);
+	res = pg_get_viewdef_worker(viewoid, prettyFlags,
+								WRAP_COLUMN_DEFAULT,
+								InitProvenancesForCache(PROVENANCE_FUNCTION, fcinfo->flinfo->fn_oid, fcinfo->flinfo->fn_owner));
 
 	if (res == NULL)
 		PG_RETURN_NULL();
@@ -797,7 +813,8 @@ pg_get_viewdef_name_ext(PG_FUNCTION_ARGS)
  * Common code for by-OID and by-name variants of pg_get_viewdef
  */
 static char *
-pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn)
+pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn,
+					  Provenances *provenances)
 {
 	Datum		args[2];
 	char		nulls[2];
@@ -828,7 +845,8 @@ pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn)
 
 		argtypes[0] = OIDOID;
 		argtypes[1] = NAMEOID;
-		plan = SPI_prepare(query_getviewrule, 2, argtypes);
+		plan = SPI_prepare(query_getviewrule, 2, argtypes,
+						   provenances);
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare failed for \"%s\"", query_getviewrule);
 		SPI_keepplan(plan);
@@ -842,7 +860,8 @@ pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn)
 	args[1] = DirectFunctionCall1(namein, CStringGetDatum(ViewSelectRuleName));
 	nulls[0] = ' ';
 	nulls[1] = ' ';
-	spirc = SPI_execute_plan(plan_getviewrule, args, nulls, true, 0);
+	spirc = SPI_execute_plan(plan_getviewrule, args, nulls,
+							 true, 0);
 	if (spirc != SPI_OK_SELECT)
 		elog(ERROR, "failed to get pg_rewrite tuple for view %u", viewoid);
 	if (SPI_processed != 1)
@@ -1079,7 +1098,7 @@ pg_get_triggerdef_worker(Oid trigid, bool pretty)
 
 		appendStringInfoString(&buf, "WHEN (");
 
-		qual = stringToNode(TextDatumGetCString(value));
+		qual = stringToNode(TextDatumGetCString(value), PI_NEVER_EXECUTED);
 
 		relkind = get_rel_relkind(trigrec->tgrelid);
 
@@ -1369,7 +1388,7 @@ pg_get_indexdef_worker(Oid indexrelid, int colno,
 		exprsDatum = SysCacheGetAttrNotNull(INDEXRELID, ht_idx,
 											Anum_pg_index_indexprs);
 		exprsString = TextDatumGetCString(exprsDatum);
-		indexprs = (List *) stringToNode(exprsString);
+		indexprs = (List *) stringToNode(exprsString, PI_NEVER_EXECUTED);
 		pfree(exprsString);
 	}
 	else
@@ -1565,7 +1584,7 @@ pg_get_indexdef_worker(Oid indexrelid, int colno,
 			predDatum = SysCacheGetAttrNotNull(INDEXRELID, ht_idx,
 											   Anum_pg_index_indpred);
 			predString = TextDatumGetCString(predDatum);
-			node = (Node *) stringToNode(predString);
+			node = (Node *) stringToNode(predString, PI_NEVER_EXECUTED);
 			pfree(predString);
 
 			/* Deparse */
@@ -1911,7 +1930,7 @@ make_propgraphdef_properties(StringInfo buf, Oid ellabelid, Oid elrelid)
 		exprDatum = heap_getattr(tup, Anum_pg_propgraph_label_property_plpexpr, RelationGetDescr(plprel), &isnull);
 		Assert(!isnull);
 		tmp = TextDatumGetCString(exprDatum);
-		expr = stringToNode(tmp);
+		expr = stringToNode(tmp, PI_NEVER_EXECUTED);
 		pfree(tmp);
 
 		propname = get_propgraph_property_name(plpform->plppropid);
@@ -2056,7 +2075,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool columns_only, bool missing_ok)
 		exprsDatum = SysCacheGetAttrNotNull(STATEXTOID, statexttup,
 											Anum_pg_statistic_ext_stxexprs);
 		exprsString = TextDatumGetCString(exprsDatum);
-		exprs = (List *) stringToNode(exprsString);
+		exprs = (List *) stringToNode(exprsString, PI_NEVER_EXECUTED);
 		pfree(exprsString);
 	}
 	else
@@ -2229,7 +2248,7 @@ pg_get_statisticsobjdef_expressions(PG_FUNCTION_ARGS)
 	datum = SysCacheGetAttrNotNull(STATEXTOID, statexttup,
 								   Anum_pg_statistic_ext_stxexprs);
 	tmp = TextDatumGetCString(datum);
-	exprs = (List *) stringToNode(tmp);
+	exprs = (List *) stringToNode(tmp, PI_NEVER_EXECUTED);
 	pfree(tmp);
 
 	context = deparse_context_for(get_relation_name(statextrec->stxrelid),
@@ -2343,7 +2362,7 @@ pg_get_partkeydef_worker(Oid relid, int prettyFlags,
 		exprsDatum = SysCacheGetAttrNotNull(PARTRELID, tuple,
 											Anum_pg_partitioned_table_partexprs);
 		exprsString = TextDatumGetCString(exprsDatum);
-		partexprs = (List *) stringToNode(exprsString);
+		partexprs = (List *) stringToNode(exprsString, PI_NEVER_EXECUTED);
 
 		if (!IsA(partexprs, List))
 			elog(ERROR, "unexpected node type found in partexprs: %d",
@@ -2845,7 +2864,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 											 Anum_pg_constraint_conbin);
 
 				conbin = TextDatumGetCString(val);
-				expr = stringToNode(conbin);
+				expr = stringToNode(conbin, PI_NEVER_EXECUTED);
 
 				/* Set up deparsing context for Var nodes in constraint */
 				if (conForm->conrelid != InvalidOid)
@@ -3079,7 +3098,7 @@ pg_get_expr_worker(text *expr, Oid relid, int prettyFlags)
 	exprstr = text_to_cstring(expr);
 
 	/* Convert expression to node tree */
-	node = (Node *) stringToNode(exprstr);
+	node = (Node *) stringToNode(exprstr, PI_NEVER_EXECUTED);
 
 	pfree(exprstr);
 
@@ -3690,7 +3709,7 @@ print_function_arguments(StringInfo buf, HeapTuple proctup,
 			char	   *str;
 
 			str = TextDatumGetCString(proargdefaults);
-			argdefaults = castNode(List, stringToNode(str));
+			argdefaults = castNode(List, stringToNode(str, PI_NEVER_EXECUTED));
 			pfree(str);
 			nextargdefault = list_head(argdefaults);
 			/* nlackdefaults counts only *input* arguments lacking defaults */
@@ -3890,7 +3909,7 @@ pg_get_function_arg_default(PG_FUNCTION_ARGS)
 	}
 
 	str = TextDatumGetCString(proargdefaults);
-	argdefaults = castNode(List, stringToNode(str));
+	argdefaults = castNode(List, stringToNode(str, PI_NEVER_EXECUTED));
 	pfree(str);
 
 	proc = (Form_pg_proc) GETSTRUCT(proctup);
@@ -3932,7 +3951,7 @@ print_function_sqlbody(StringInfo buf, HeapTuple proctup)
 	dpns.argnames = argnames;
 
 	tmp = SysCacheGetAttrNotNull(PROCOID, proctup, Anum_pg_proc_prosqlbody);
-	n = stringToNode(TextDatumGetCString(tmp));
+	n = stringToNode(TextDatumGetCString(tmp), PI_NEVER_EXECUTED);
 
 	if (IsA(n, List))
 	{
@@ -5752,7 +5771,7 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 	fno = SPI_fnumber(rulettc, "ev_action");
 	ev_action = SPI_getvalue(ruletup, rulettc, fno);
 	Assert(ev_action != NULL);
-	actions = (List *) stringToNode(ev_action);
+	actions = (List *) stringToNode(ev_action, PI_NEVER_EXECUTED);
 	if (actions == NIL)
 		elog(ERROR, "invalid empty ev_action list");
 
@@ -5815,7 +5834,7 @@ make_ruledef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 			appendStringInfoString(buf, "\n  ");
 		appendStringInfoString(buf, " WHERE ");
 
-		qual = stringToNode(ev_qual);
+		qual = stringToNode(ev_qual, PI_NEVER_EXECUTED);
 
 		/*
 		 * We need to make a context for recognizing any Vars in the qual
@@ -5938,7 +5957,7 @@ make_viewdef(StringInfo buf, HeapTuple ruletup, TupleDesc rulettc,
 	fno = SPI_fnumber(rulettc, "ev_action");
 	ev_action = SPI_getvalue(ruletup, rulettc, fno);
 	Assert(ev_action != NULL);
-	actions = (List *) stringToNode(ev_action);
+	actions = (List *) stringToNode(ev_action, PI_NEVER_EXECUTED);
 
 	if (list_length(actions) != 1)
 	{

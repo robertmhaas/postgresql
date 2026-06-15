@@ -15,6 +15,7 @@
 
 #include "commands/trigger.h"
 #include "lib/ilist.h"
+#include "nodes/provenance.h"
 #include "parser/parser.h"
 #include "utils/portal.h"
 
@@ -40,6 +41,7 @@ typedef struct SPIPrepareOptions
 	void	   *parserSetupArg;
 	RawParseMode parseMode;
 	int			cursorOptions;
+	Provenances *provenances;
 } SPIPrepareOptions;
 
 /* Optional arguments for SPI_execute[_plan]_extended */
@@ -60,6 +62,7 @@ typedef struct SPIParseOpenOptions
 	ParamListInfo params;
 	int			cursorOptions;
 	bool		read_only;
+	Provenances *provenances;
 } SPIParseOpenOptions;
 
 /* Plans are opaque structs for standard users of SPI */
@@ -108,9 +111,11 @@ extern PGDLLIMPORT int SPI_result;
 extern int	SPI_connect(void);
 extern int	SPI_connect_ext(int options);
 extern int	SPI_finish(void);
-extern int	SPI_execute(const char *src, bool read_only, long tcount);
+extern int	SPI_execute(const char *src, bool read_only, long tcount,
+						Provenances *provenances);
 extern int	SPI_execute_extended(const char *src,
-								 const SPIExecuteOptions *options);
+								 const SPIExecuteOptions *options,
+								 Provenances *provenances);
 extern int	SPI_execute_plan(SPIPlanPtr plan, const Datum *Values, const char *Nulls,
 							 bool read_only, long tcount);
 extern int	SPI_execute_plan_extended(SPIPlanPtr plan,
@@ -118,7 +123,8 @@ extern int	SPI_execute_plan_extended(SPIPlanPtr plan,
 extern int	SPI_execute_plan_with_paramlist(SPIPlanPtr plan,
 											ParamListInfo params,
 											bool read_only, long tcount);
-extern int	SPI_exec(const char *src, long tcount);
+extern int	SPI_exec(const char *src, long tcount,
+					 Provenances *provenances);
 extern int	SPI_execp(SPIPlanPtr plan, Datum *Values, const char *Nulls,
 					  long tcount);
 extern int	SPI_execute_snapshot(SPIPlanPtr plan,
@@ -129,16 +135,21 @@ extern int	SPI_execute_snapshot(SPIPlanPtr plan,
 extern int	SPI_execute_with_args(const char *src,
 								  int nargs, Oid *argtypes,
 								  const Datum *Values, const char *Nulls,
-								  bool read_only, long tcount);
-extern SPIPlanPtr SPI_prepare(const char *src, int nargs, Oid *argtypes);
-extern SPIPlanPtr SPI_prepare_cursor(const char *src, int nargs, Oid *argtypes,
-									 int cursorOptions);
+								  bool read_only, long tcount,
+								  Provenances *provenances);
+extern SPIPlanPtr SPI_prepare(const char *src, int nargs, Oid *argtypes,
+							  Provenances *provenances);
+extern SPIPlanPtr SPI_prepare_cursor(const char *src, int nargs,
+									 Oid *argtypes,
+									 int cursorOptions,
+									 Provenances *provenances);
 extern SPIPlanPtr SPI_prepare_extended(const char *src,
 									   const SPIPrepareOptions *options);
 extern SPIPlanPtr SPI_prepare_params(const char *src,
 									 ParserSetupHook parserSetup,
 									 void *parserSetupArg,
-									 int cursorOptions);
+									 int cursorOptions,
+									 Provenances *provenances);
 extern int	SPI_keepplan(SPIPlanPtr plan);
 extern SPIPlanPtr SPI_saveplan(SPIPlanPtr plan);
 extern int	SPI_freeplan(SPIPlanPtr plan);
@@ -177,7 +188,8 @@ extern Portal SPI_cursor_open_with_args(const char *name,
 										const char *src,
 										int nargs, Oid *argtypes,
 										Datum *Values, const char *Nulls,
-										bool read_only, int cursorOptions);
+										bool read_only, int cursorOptions,
+										Provenances *provenances);
 extern Portal SPI_cursor_open_with_paramlist(const char *name, SPIPlanPtr plan,
 											 ParamListInfo params, bool read_only);
 extern Portal SPI_cursor_parse_open(const char *name,

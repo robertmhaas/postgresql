@@ -35,6 +35,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/provenance.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -83,7 +84,8 @@ static PartitionScheme find_partition_scheme(PlannerInfo *root,
 											 Relation relation);
 static void set_baserel_partition_key_exprs(Relation relation,
 											RelOptInfo *rel);
-static void set_baserel_partition_constraint(Relation relation,
+static void set_baserel_partition_constraint(PlannerInfo *root,
+											 Relation relation,
 											 RelOptInfo *rel);
 
 
@@ -432,15 +434,23 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * "root".  This ensures that NullTest quals for Vars can be
 			 * properly reduced.
 			 */
-			info->indexprs = RelationGetIndexExpressions(indexRelation);
-			info->indpred = RelationGetIndexPredicate(indexRelation);
+			info->indexprs =
+				RelationGetIndexExpressions(indexRelation);
+			info->indexprs_provenances =
+				copyObject(indexRelation->rd_indexprs_provenances);
+			info->indpred =
+				RelationGetIndexPredicate(indexRelation);
+			info->indpred_provenances =
+				copyObject(indexRelation->rd_indpred_provenances);
 			if (info->indexprs)
 			{
 				if (varno != 1)
 					ChangeVarNodes((Node *) info->indexprs, 1, varno, 0);
 
 				info->indexprs = (List *)
-					eval_const_expressions(root, (Node *) info->indexprs);
+					eval_const_expressions(root,
+										   (Node *) info->indexprs,
+										   info->indexprs_provenances);
 			}
 			if (info->indpred)
 			{
@@ -449,7 +459,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 				info->indpred = (List *)
 					eval_const_expressions(root,
-										   (Node *) make_ands_explicit(info->indpred));
+										   (Node *) make_ands_explicit(info->indpred),
+										   info->indpred_provenances);
 				info->indpred = make_ands_implicit((Expr *) info->indpred);
 			}
 
@@ -941,6 +952,10 @@ infer_arbiter_indexes(PlannerInfo *root)
 										   attno - FirstLowInvalidHeapAttributeNumber);
 				}
 
+				/*
+				 * We'll consider provenances below, but we need not consider
+				 * them here, as these values are not used for execution.
+				 */
 				inferElems = RelationGetIndexExpressions(idxRel);
 				inferIndexExprs = RelationGetIndexPredicate(idxRel);
 				break;
@@ -960,6 +975,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		List	   *predExprs;
 		AttrNumber	natt;
 		bool		match;
+		Provenances *provenances;
 
 		/*
 		 * Extract info from the relation descriptor for the index.
@@ -1073,12 +1089,15 @@ infer_arbiter_indexes(PlannerInfo *root)
 
 		/* Expression attributes (if any) must match */
 		idxExprs = RelationGetIndexExpressions(idxRel);
+		provenances = copyObject(idxRel->rd_indexprs_provenances);
 		if (idxExprs)
 		{
 			if (varno != 1)
 				ChangeVarNodes((Node *) idxExprs, 1, varno, 0);
 
-			idxExprs = (List *) eval_const_expressions(root, (Node *) idxExprs);
+			idxExprs = (List *) eval_const_expressions(root,
+													   (Node *) idxExprs,
+													   provenances);
 		}
 
 		/*
@@ -1140,6 +1159,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 			continue;
 
 		predExprs = RelationGetIndexPredicate(idxRel);
+		provenances = copyObject(idxRel->rd_indpred_provenances);
 		if (predExprs)
 		{
 			if (varno != 1)
@@ -1147,7 +1167,8 @@ infer_arbiter_indexes(PlannerInfo *root)
 
 			predExprs = (List *)
 				eval_const_expressions(root,
-									   (Node *) make_ands_explicit(predExprs));
+									   (Node *) make_ands_explicit(predExprs),
+									   provenances);
 			predExprs = make_ands_implicit((Expr *) predExprs);
 		}
 
@@ -1535,6 +1556,7 @@ get_relation_constraints(PlannerInfo *root,
 		for (i = 0; i < num_check; i++)
 		{
 			Node	   *cexpr;
+			ProvenanceIndex pidx;
 
 			/*
 			 * If this constraint hasn't been fully validated yet, we must
@@ -1555,7 +1577,11 @@ get_relation_constraints(PlannerInfo *root,
 			if (constr->check[i].ccnoinherit && !include_noinherit)
 				continue;
 
-			cexpr = stringToNode(constr->check[i].ccbin);
+			/* Deserialize with correct provenance. */
+			pidx = ProvenanceForConstraint(root->glob->provenances,
+										   constr->check[i].ccoid,
+										   relation->rd_rel->relowner, 0);
+			cexpr = stringToNode(constr->check[i].ccbin, pidx);
 
 			/*
 			 * Fix Vars to have the desired varno.  This must be done before
@@ -1575,7 +1601,8 @@ get_relation_constraints(PlannerInfo *root,
 			 * stuff involving subqueries, however, since we don't allow any
 			 * in check constraints.)
 			 */
-			cexpr = eval_const_expressions(root, cexpr);
+			cexpr = eval_const_expressions(root, cexpr,
+										   root->glob->provenances);
 
 			cexpr = (Node *) canonicalize_qual((Expr *) cexpr, true);
 
@@ -1628,7 +1655,7 @@ get_relation_constraints(PlannerInfo *root,
 	if (include_partition && relation->rd_rel->relispartition)
 	{
 		/* make sure rel->partition_qual is set */
-		set_baserel_partition_constraint(relation, rel);
+		set_baserel_partition_constraint(root, relation, rel);
 		result = list_concat(result, rel->partition_qual);
 	}
 
@@ -1638,7 +1665,8 @@ get_relation_constraints(PlannerInfo *root,
 	if (result)
 		result = (List *) expand_generated_columns_in_expr((Node *) result,
 														   relation,
-														   varno);
+														   varno,
+														   root->glob->provenances);
 
 	table_close(relation, NoLock);
 
@@ -1787,13 +1815,29 @@ get_relation_statistics(PlannerInfo *root, RelOptInfo *rel,
 			if (!isnull)
 			{
 				char	   *exprsString;
+				Provenances *provenances;
+
+				/*
+				 * Provenance is the extended statistics object.
+				 *
+				 * These expressions never become part of the query being
+				 * planned, so root->glob->provenances should not be touched
+				 * here.
+				 */
+				provenances =
+					InitProvenancesForCache(PROVENANCE_STATISTICS,
+											statOid,
+											staForm->stxowner);
 
 				exprsString = TextDatumGetCString(datum);
-				exprs = (List *) stringToNode(exprsString);
+				exprs = (List *) stringToNode(exprsString, 0);
 				pfree(exprsString);
 
 				/* Expand virtual generated columns in the expressions */
-				exprs = (List *) expand_generated_columns_in_expr((Node *) exprs, relation, 1);
+				exprs = (List *)
+					expand_generated_columns_in_expr((Node *) exprs,
+													 relation, 1,
+													 provenances);
 
 				/*
 				 * Modify the copies we obtain from the relcache to have the
@@ -1815,7 +1859,9 @@ get_relation_statistics(PlannerInfo *root, RelOptInfo *rel,
 				 * We must not use canonicalize_qual, however, since these
 				 * aren't qual expressions.
 				 */
-				exprs = (List *) eval_const_expressions(root, (Node *) exprs);
+				exprs = (List *) eval_const_expressions(root,
+														(Node *) exprs,
+														provenances);
 
 				/* May as well fix opfuncids too */
 				fix_opfuncids((Node *) exprs);
@@ -2665,7 +2711,7 @@ get_dependent_generated_columns(PlannerInfo *root, Index rti,
 				continue;
 
 			/* identify columns this generated column depends on */
-			expr = stringToNode(defval->adbin);
+			expr = stringToNode(defval->adbin, PI_NEVER_EXECUTED);
 			pull_varattnos(expr, 1, &attrs_used);
 
 			if (bms_overlap(target_cols, attrs_used))
@@ -2706,7 +2752,7 @@ set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
 	rel->boundinfo = partdesc->boundinfo;
 	rel->nparts = partdesc->nparts;
 	set_baserel_partition_key_exprs(relation, rel);
-	set_baserel_partition_constraint(relation, rel);
+	set_baserel_partition_constraint(root, relation, rel);
 }
 
 /*
@@ -2889,7 +2935,8 @@ set_baserel_partition_key_exprs(Relation relation,
  * given relation.
  */
 static void
-set_baserel_partition_constraint(Relation relation, RelOptInfo *rel)
+set_baserel_partition_constraint(PlannerInfo *root, Relation relation,
+								 RelOptInfo *rel)
 {
 	List	   *partconstr;
 
@@ -2903,10 +2950,13 @@ set_baserel_partition_constraint(Relation relation, RelOptInfo *rel)
 	 * implicit-AND format, we'd have to explicitly convert it to explicit-AND
 	 * format and back again.
 	 */
-	partconstr = RelationGetPartitionQual(relation);
+	partconstr = RelationGetPartitionQual(relation,
+										  root->glob->provenances);
 	if (partconstr)
 	{
-		partconstr = (List *) expression_planner((Expr *) partconstr);
+		partconstr = (List *)
+			expression_planner((Expr *) partconstr,
+							   root->glob->provenances);
 		if (rel->relid != 1)
 			ChangeVarNodes((Node *) partconstr, 1, rel->relid, 0);
 		rel->partition_qual = partconstr;

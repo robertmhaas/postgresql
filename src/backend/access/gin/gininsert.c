@@ -47,6 +47,7 @@
 #define PARALLEL_KEY_QUERY_TEXT			UINT64CONST(0xB000000000000003)
 #define PARALLEL_KEY_WAL_USAGE			UINT64CONST(0xB000000000000004)
 #define PARALLEL_KEY_BUFFER_USAGE		UINT64CONST(0xB000000000000005)
+#define PARALLEL_KEY_PROVENANCES		UINT64CONST(0xB000000000000006)
 
 /*
  * Status for index builds performed in parallel.  This is allocated in a
@@ -185,18 +186,21 @@ typedef struct
 
 /* parallel index builds */
 static void _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
-								bool isconcurrent, int request);
+								bool isconcurrent, int request,
+								Provenances *provenances);
 static void _gin_end_parallel(GinLeader *ginleader, GinBuildState *state);
 static Size _gin_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static double _gin_parallel_heapscan(GinBuildState *state);
 static double _gin_parallel_merge(GinBuildState *state);
 static void _gin_leader_participate_as_worker(GinBuildState *buildstate,
-											  Relation heap, Relation index);
+											  Relation heap, Relation index,
+											  Provenances *provenances);
 static void _gin_parallel_scan_and_build(GinBuildState *state,
 										 GinBuildShared *ginshared,
 										 Sharedsort *sharedsort,
 										 Relation heap, Relation index,
-										 int sortmem, bool progress);
+										 int sortmem, bool progress,
+										 Provenances *provenances);
 
 static ItemPointer _gin_parse_tuple_items(GinTuple *a);
 static Datum _gin_parse_tuple_key(GinTuple *a);
@@ -615,7 +619,8 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 }
 
 IndexBuildResult *
-ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+ginbuild(Relation heap, Relation index, IndexInfo *indexInfo,
+		 Provenances *provenances)
 {
 	IndexBuildResult *result;
 	double		reltuples;
@@ -698,7 +703,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 */
 	if (indexInfo->ii_ParallelWorkers > 0)
 		_gin_begin_parallel(state, heap, index, indexInfo->ii_Concurrent,
-							indexInfo->ii_ParallelWorkers);
+							indexInfo->ii_ParallelWorkers, provenances);
 
 	/*
 	 * If parallel build requested and at least one worker process was
@@ -758,7 +763,8 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		 * dataPlaceToPage prefers to receive tuples in TID order.
 		 */
 		reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
-										   ginBuildCallback, &buildstate, NULL);
+										   ginBuildCallback, &buildstate,
+										   NULL, provenances);
 
 		/* dump remaining entries to the index */
 		oldCtx = MemoryContextSwitchTo(buildstate.tmpCtx);
@@ -935,7 +941,8 @@ gininsert(Relation index, Datum *values, bool *isnull,
  */
 static void
 _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
-					bool isconcurrent, int request)
+					bool isconcurrent, int request,
+					Provenances *provenances)
 {
 	ParallelContext *pcxt;
 	int			scantuplesortstates;
@@ -948,6 +955,9 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
 	bool		leaderparticipates = true;
+	char	   *provenancesstr;
+	char	   *sharedprovenances;
+	int			provenanceslen;
 	int			querylen;
 
 #ifdef DISABLE_LEADER_PARTICIPATION
@@ -1001,7 +1011,7 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 						   mul_size(sizeof(BufferUsage), pcxt->nworkers));
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
-	/* Finally, estimate PARALLEL_KEY_QUERY_TEXT space */
+	/* Estimate PARALLEL_KEY_QUERY_TEXT space */
 	if (debug_query_string)
 	{
 		querylen = strlen(debug_query_string);
@@ -1010,6 +1020,12 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 	}
 	else
 		querylen = 0;			/* keep compiler quiet */
+
+	/* Estimate PARALLEL_KEY_PROVENANCES space */
+	provenancesstr = nodeToString(provenances);
+	provenanceslen = strlen(provenancesstr);
+	shm_toc_estimate_chunk(&pcxt->estimator, provenanceslen + 1);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
 	/* Everyone's had a chance to ask for space, so now create the DSM */
 	InitializeParallelDSM(pcxt);
@@ -1065,6 +1081,13 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_QUERY_TEXT, sharedquery);
 	}
 
+	/* Store serialized provenances for workers */
+	sharedprovenances = (char *) shm_toc_allocate(pcxt->toc,
+												  provenanceslen + 1);
+	memcpy(sharedprovenances, provenancesstr, provenanceslen + 1);
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_PROVENANCES,
+				   sharedprovenances);
+
 	/*
 	 * Allocate space for each worker's WalUsage and BufferUsage; no need to
 	 * initialize.
@@ -1100,7 +1123,8 @@ _gin_begin_parallel(GinBuildState *buildstate, Relation heap, Relation index,
 
 	/* Join heap scan ourselves */
 	if (leaderparticipates)
-		_gin_leader_participate_as_worker(buildstate, heap, index);
+		_gin_leader_participate_as_worker(buildstate, heap, index,
+										  provenances);
 
 	/*
 	 * Caller needs to wait for all launched workers when we return.  Make
@@ -1818,7 +1842,8 @@ _gin_parallel_estimate_shared(Relation heap, Snapshot snapshot)
  * Within leader, participate as a parallel worker.
  */
 static void
-_gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Relation index)
+_gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap,
+								  Relation index, Provenances *provenances)
 {
 	GinLeader  *ginleader = buildstate->bs_leader;
 	int			sortmem;
@@ -1833,7 +1858,7 @@ _gin_leader_participate_as_worker(GinBuildState *buildstate, Relation heap, Rela
 	/* Perform work common to all participants */
 	_gin_parallel_scan_and_build(buildstate, ginleader->ginshared,
 								 ginleader->sharedsort, heap, index,
-								 sortmem, true);
+								 sortmem, true, provenances);
 }
 
 /*
@@ -2032,7 +2057,8 @@ static void
 _gin_parallel_scan_and_build(GinBuildState *state,
 							 GinBuildShared *ginshared, Sharedsort *sharedsort,
 							 Relation heap, Relation index,
-							 int sortmem, bool progress)
+							 int sortmem, bool progress,
+							 Provenances *provenances)
 {
 	SortCoordinate coordinate;
 	TableScanDesc scan;
@@ -2072,7 +2098,8 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 									SO_NONE);
 
 	reltuples = table_index_build_scan(heap, index, indexInfo, true, progress,
-									   ginBuildCallbackParallel, state, scan);
+									   ginBuildCallbackParallel, state, scan,
+									   provenances);
 
 	/* write remaining accumulated entries */
 	ginFlushBuildState(state, index);
@@ -2111,6 +2138,8 @@ void
 _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 {
 	char	   *sharedquery;
+	char	   *provenancesstr;
+	Provenances *provenances;
 	GinBuildShared *ginshared;
 	Sharedsort *sharedsort;
 	GinBuildState buildstate;
@@ -2185,6 +2214,10 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
 	tuplesort_attach_shared(sharedsort, seg);
 
+	/* Deserialize provenances from leader */
+	provenancesstr = shm_toc_lookup(toc, PARALLEL_KEY_PROVENANCES, false);
+	provenances = stringToNode(provenancesstr, -1);
+
 	/* Prepare to track buffer usage during parallel execution */
 	InstrStartParallelQuery();
 
@@ -2196,7 +2229,8 @@ _gin_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	sortmem = maintenance_work_mem / ginshared->scantuplesortstates;
 
 	_gin_parallel_scan_and_build(&buildstate, ginshared, sharedsort,
-								 heapRel, indexRel, sortmem, false);
+								 heapRel, indexRel, sortmem, false,
+								 provenances);
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);

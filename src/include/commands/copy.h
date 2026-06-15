@@ -111,9 +111,12 @@ extern void DoCopy(ParseState *pstate, const CopyStmt *stmt,
 				   uint64 *processed);
 
 extern void ProcessCopyOptions(ParseState *pstate, CopyFormatOptions *opts_out, bool is_from, List *options);
-extern CopyFromState BeginCopyFrom(ParseState *pstate, Relation rel, Node *whereClause,
+extern CopyFromState BeginCopyFrom(ParseState *pstate, Relation rel,
+								   Node *whereClause,
 								   const char *filename,
-								   bool is_program, copy_data_source_cb data_source_cb, List *attnamelist, List *options);
+								   bool is_program,
+								   copy_data_source_cb data_source_cb,
+								   List *attnamelist, List *options);
 extern void EndCopyFrom(CopyFromState cstate);
 extern bool NextCopyFrom(CopyFromState cstate, ExprContext *econtext,
 						 Datum *values, bool *nulls);
@@ -131,6 +134,7 @@ extern DestReceiver *CreateCopyDestReceiver(void);
  */
 extern CopyToState BeginCopyTo(ParseState *pstate, Relation rel, RawStmt *raw_query,
 							   Oid queryRelId, const char *filename, bool is_program,
+							   Provenances *provenances,
 							   copy_data_dest_cb data_dest_cb, List *attnamelist, List *options);
 extern void EndCopyTo(CopyToState cstate);
 extern uint64 DoCopyTo(CopyToState cstate);

@@ -61,6 +61,7 @@
 #include "libpq/pqformat.h"
 #include "libpq/pqmq.h"
 #include "miscadmin.h"
+#include "nodes/provenance.h"
 #include "optimizer/optimizer.h"
 #include "pgstat.h"
 #include "replication/logicalrelation.h"
@@ -158,7 +159,7 @@ static bool cluster_rel_recheck(RepackCommand cmd, Relation OldHeap,
 static void check_concurrent_repack_requirements(Relation rel,
 												 Oid *ident_idx_p);
 static void rebuild_relation(Relation OldHeap, Relation index, bool verbose,
-							 Oid ident_idx);
+							 Oid ident_idx, Provenances *provenances);
 static void copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex,
 							Snapshot snapshot,
 							bool verbose,
@@ -200,14 +201,17 @@ static void release_change_context(ChangeContext *chgcxt);
 static void rebuild_relation_finish_concurrent(Relation NewHeap, Relation OldHeap,
 											   Oid identIdx,
 											   TransactionId frozenXid,
-											   MultiXactId cutoffMulti);
-static List *build_new_indexes(Relation NewHeap, Relation OldHeap, List *OldIndexes);
+											   MultiXactId cutoffMulti,
+											   Provenances *provenances);
+static List *build_new_indexes(Relation NewHeap, Relation OldHeap,
+							   List *OldIndexes, Provenances *provenances);
 static void copy_index_constraints(Relation old_index, Oid new_index_id,
 								   Oid new_heap_id);
 static Relation process_single_relation(RepackStmt *stmt,
 										LOCKMODE lockmode,
 										bool isTopLevel,
-										ClusterParams *params);
+										ClusterParams *params,
+										Provenances *provenances);
 static Oid	determine_clustered_index(Relation rel, bool usingindex,
 									  const char *indexname);
 
@@ -247,6 +251,7 @@ void
 ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel)
 {
 	ClusterParams params = {0};
+	Provenances *provenances;
 	Relation	rel = NULL;
 	MemoryContext repack_context;
 	LOCKMODE	lockmode;
@@ -286,6 +291,9 @@ ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel)
 		(analyze ? CLUOPT_ANALYZE : 0) |
 		(concurrently ? CLUOPT_CONCURRENT : 0);
 
+	/* Separate parse-time provenances from execution-time provenances. */
+	provenances = InitProvenances(pstate->p_provenances, 0);
+
 	/* Determine the lock mode to use. */
 	lockmode = RepackLockLevel((params.options & CLUOPT_CONCURRENT) != 0);
 
@@ -310,7 +318,8 @@ ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel)
 	 */
 	if (stmt->relation != NULL)
 	{
-		rel = process_single_relation(stmt, lockmode, isTopLevel, &params);
+		rel = process_single_relation(stmt, lockmode, isTopLevel, &params,
+									  provenances);
 		if (rel == NULL)
 			return;				/* all done */
 	}
@@ -463,7 +472,8 @@ ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel)
 		PushActiveSnapshot(GetTransactionSnapshot());
 
 		/* Process this table */
-		cluster_rel(stmt->command, rel, rtc->indexOid, &params, isTopLevel);
+		cluster_rel(stmt->command, rel, rtc->indexOid, &params, isTopLevel,
+					provenances);
 		/* cluster_rel closes the relation, but keeps lock */
 
 		PopActiveSnapshot();
@@ -519,7 +529,8 @@ RepackLockLevel(bool concurrent)
  */
 void
 cluster_rel(RepackCommand cmd, Relation OldHeap, Oid indexOid,
-			ClusterParams *params, bool isTopLevel)
+			ClusterParams *params, bool isTopLevel,
+			Provenances *provenances)
 {
 	Oid			tableOid = RelationGetRelid(OldHeap);
 	Relation	index;
@@ -682,13 +693,14 @@ cluster_rel(RepackCommand cmd, Relation OldHeap, Oid indexOid,
 	{
 		PG_ENSURE_ERROR_CLEANUP(stop_repack_decoding_worker_cb, 0);
 		{
-			rebuild_relation(OldHeap, index, verbose, ident_idx);
+			rebuild_relation(OldHeap, index, verbose, ident_idx,
+							 provenances);
 		}
 		PG_END_ENSURE_ERROR_CLEANUP(stop_repack_decoding_worker_cb, 0);
 		stop_repack_decoding_worker();
 	}
 	else
-		rebuild_relation(OldHeap, index, verbose, ident_idx);
+		rebuild_relation(OldHeap, index, verbose, ident_idx, provenances);
 
 out:
 	/* Roll back any GUC changes executed by index functions */
@@ -1005,7 +1017,7 @@ check_concurrent_repack_requirements(Relation rel, Oid *ident_idx_p)
  */
 static void
 rebuild_relation(Relation OldHeap, Relation index, bool verbose,
-				 Oid ident_idx)
+				 Oid ident_idx, Provenances *provenances)
 {
 	Oid			tableOid = RelationGetRelid(OldHeap);
 	Oid			accessMethod = OldHeap->rd_rel->relam;
@@ -1079,7 +1091,7 @@ rebuild_relation(Relation OldHeap, Relation index, bool verbose,
 	OIDNewHeap = make_new_heap(tableOid, tableSpace,
 							   accessMethod,
 							   relpersistence,
-							   NoLock);
+							   NoLock, provenances);
 	Assert(CheckRelationOidLockedByMe(OIDNewHeap, AccessExclusiveLock, false));
 	NewHeap = table_open(OIDNewHeap, NoLock);
 
@@ -1106,7 +1118,8 @@ rebuild_relation(Relation OldHeap, Relation index, bool verbose,
 			index_close(index, NoLock);
 
 		rebuild_relation_finish_concurrent(NewHeap, OldHeap, ident_idx,
-										   frozenXid, cutoffMulti);
+										   frozenXid, cutoffMulti,
+										   provenances);
 
 		pgstat_progress_update_param(PROGRESS_REPACK_PHASE,
 									 PROGRESS_REPACK_PHASE_FINAL_CLEANUP);
@@ -1135,7 +1148,7 @@ rebuild_relation(Relation OldHeap, Relation index, bool verbose,
 						 swap_toast_by_content, false, true,
 						 true,	/* reindex */
 						 frozenXid, cutoffMulti,
-						 relpersistence);
+						 relpersistence, provenances);
 	}
 }
 
@@ -1152,7 +1165,8 @@ rebuild_relation(Relation OldHeap, Relation index, bool verbose,
  */
 Oid
 make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
-			  char relpersistence, LOCKMODE lockmode)
+			  char relpersistence, LOCKMODE lockmode,
+			  Provenances *provenances)
 {
 	TupleDesc	OldHeapDesc;
 	char		NewHeapName[NAMEDATALEN];
@@ -1258,7 +1272,8 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
 		if (isNull)
 			reloptions = (Datum) 0;
 
-		NewHeapCreateToastTable(OIDNewHeap, reloptions, lockmode, toastid);
+		NewHeapCreateToastTable(OIDNewHeap, reloptions, lockmode, toastid,
+								provenances);
 
 		ReleaseSysCache(tuple);
 	}
@@ -1916,7 +1931,8 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 				 bool reindex,
 				 TransactionId frozenXid,
 				 MultiXactId cutoffMulti,
-				 char newrelpersistence)
+				 char newrelpersistence,
+				 Provenances *provenances)
 {
 	ObjectAddress object;
 	Oid			mapped_tables[4];
@@ -1984,7 +2000,8 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 		pgstat_progress_update_param(PROGRESS_REPACK_PHASE,
 									 PROGRESS_REPACK_PHASE_REBUILD_INDEX);
 
-		reindex_relation(NULL, OIDOldHeap, reindex_flags, &reindex_params);
+		reindex_relation(NULL, OIDOldHeap, reindex_flags, &reindex_params,
+						 provenances);
 	}
 
 	/* Report that we are now doing clean up */
@@ -2374,7 +2391,7 @@ repack_is_permitted_for_relation(RepackCommand cmd, Oid relid, Oid userid)
  */
 static Relation
 process_single_relation(RepackStmt *stmt, LOCKMODE lockmode, bool isTopLevel,
-						ClusterParams *params)
+						ClusterParams *params, Provenances *provenances)
 {
 	Relation	rel;
 	Oid			tableOid;
@@ -2425,7 +2442,8 @@ process_single_relation(RepackStmt *stmt, LOCKMODE lockmode, bool isTopLevel,
 		if (OidIsValid(indexOid))
 			check_index_is_clusterable(rel, indexOid, lockmode);
 
-		cluster_rel(stmt->command, rel, indexOid, params, isTopLevel);
+		cluster_rel(stmt->command, rel, indexOid, params, isTopLevel,
+					provenances);
 
 		/*
 		 * Do an analyze, if requested.  We close the transaction and start a
@@ -2446,7 +2464,8 @@ process_single_relation(RepackStmt *stmt, LOCKMODE lockmode, bool isTopLevel,
 			if (params->options & CLUOPT_VERBOSE)
 				vac_params.options |= VACOPT_VERBOSE;
 			analyze_rel(tableOid, NULL, &vac_params,
-						stmt->relation->va_cols, true, NULL);
+						stmt->relation->va_cols, true, NULL,
+						provenances);
 			PopActiveSnapshot();
 			CommandCounterIncrement();
 		}
@@ -3111,7 +3130,8 @@ release_change_context(ChangeContext *chgcxt)
 static void
 rebuild_relation_finish_concurrent(Relation NewHeap, Relation OldHeap,
 								   Oid identIdx, TransactionId frozenXid,
-								   MultiXactId cutoffMulti)
+								   MultiXactId cutoffMulti,
+								   Provenances *provenances)
 {
 	List	   *ind_oids_new;
 	Oid			old_table_oid = RelationGetRelid(OldHeap);
@@ -3145,7 +3165,8 @@ rebuild_relation_finish_concurrent(Relation NewHeap, Relation OldHeap,
 	 * are not necessarily dangerous, but can make user confused if the
 	 * changes they do get lost due to REPACK.)
 	 */
-	ind_oids_new = build_new_indexes(NewHeap, OldHeap, ind_oids_old);
+	ind_oids_new = build_new_indexes(NewHeap, OldHeap, ind_oids_old,
+									 provenances);
 
 	/*
 	 * The identity index in the new relation appears in the same relative
@@ -3311,7 +3332,7 @@ rebuild_relation_finish_concurrent(Relation NewHeap, Relation OldHeap,
 					 true,
 					 false,		/* reindex */
 					 frozenXid, cutoffMulti,
-					 relpersistence);
+					 relpersistence, provenances);
 }
 
 /*
@@ -3325,7 +3346,8 @@ rebuild_relation_finish_concurrent(Relation NewHeap, Relation OldHeap,
  * index storage.
  */
 static List *
-build_new_indexes(Relation NewHeap, Relation OldHeap, List *OldIndexes)
+build_new_indexes(Relation NewHeap, Relation OldHeap, List *OldIndexes,
+				  Provenances *provenances)
 {
 	List	   *result = NIL;
 
@@ -3347,7 +3369,7 @@ build_new_indexes(Relation NewHeap, Relation OldHeap, List *OldIndexes)
 									 false);
 		newindex = index_create_copy(NewHeap, INDEX_CREATE_SUPPRESS_PROGRESS,
 									 oldindex, ind->rd_rel->reltablespace,
-									 newName);
+									 newName, provenances);
 		copy_index_constraints(ind, newindex, RelationGetRelid(NewHeap));
 		result = lappend_oid(result, newindex);
 

@@ -319,6 +319,8 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 		 * scantuple has to point to that slot, too.
 		 */
 		arg->estate = CreateExecutorState();
+		/* PROVENANCE-TODO: need to thread provenances into this function */
+		arg->estate->es_provenances = InitProvenancesForSession();
 		slot = MakeSingleTupleTableSlot(tupDesc, &TTSOpsHeapTuple);
 		econtext = GetPerTupleExprContext(arg->estate);
 		econtext->ecxt_scantuple = slot;

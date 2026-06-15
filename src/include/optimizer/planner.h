@@ -29,7 +29,8 @@ typedef PlannedStmt *(*planner_hook_type) (Query *parse,
 										   const char *query_string,
 										   int cursorOptions,
 										   ParamListInfo boundParams,
-										   ExplainState *es);
+										   ExplainState *es,
+										   Provenances *provenances);
 extern PGDLLIMPORT planner_hook_type planner_hook;
 
 /* Hook for plugins to get control after PlannerGlobal is initialized */
@@ -58,7 +59,8 @@ extern PGDLLIMPORT create_upper_paths_hook_type create_upper_paths_hook;
 extern PlannedStmt *standard_planner(Query *parse, const char *query_string,
 									 int cursorOptions,
 									 ParamListInfo boundParams,
-									 ExplainState *es);
+									 ExplainState *es,
+									 Provenances *provenances);
 
 extern PlannerInfo *subquery_planner(PlannerGlobal *glob, Query *parse,
 									 char *plan_name,

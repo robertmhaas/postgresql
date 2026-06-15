@@ -1002,6 +1002,8 @@ typedef struct PLpgSQL_function
 	bool		requires_procedure_resowner;	/* contains CALL or DO? */
 	bool		has_exception_block;	/* contains BEGIN...EXCEPTION? */
 
+	Provenances *provenances;	/* provenance for queries run by func */
+
 	/* this field changes when the function is used */
 	struct PLpgSQL_execstate *cur_estate;
 } PLpgSQL_function;
@@ -1026,6 +1028,8 @@ typedef struct PLpgSQL_execstate
 
 	bool		readonly_func;
 	bool		atomic;
+
+	Provenances *provenances;	/* provenance for queries run by func */
 
 	char	   *exitlabel;		/* the "target" label of the current EXIT or
 								 * CONTINUE stmt, if any */
@@ -1222,7 +1226,8 @@ extern PLpgSQL_plugin **plpgsql_plugin_ptr;
  */
 extern PGDLLEXPORT PLpgSQL_function *plpgsql_compile(FunctionCallInfo fcinfo,
 													 bool forValidator);
-extern PLpgSQL_function *plpgsql_compile_inline(char *proc_source);
+extern PLpgSQL_function *plpgsql_compile_inline(char *proc_source,
+												Provenances *provenances);
 extern PGDLLEXPORT void plpgsql_parser_setup(struct ParseState *pstate,
 											 PLpgSQL_expr *expr);
 extern bool plpgsql_parse_word(char *word1, const char *yytxt, bool lookup,

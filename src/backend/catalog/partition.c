@@ -365,9 +365,13 @@ update_default_partition_oid(Oid parentId, Oid defaultPartId)
  * This function returns the negation of new_part_constraints, which
  * would be an integral part of the default partition constraints after
  * addition of the partition to which the new_part_constraints belongs.
+ *
+ * provenances is the provenance list for new_part_constraints, and this
+ * function may extend it via the call to eval_const_expressions().
  */
 List *
-get_proposed_default_constraint(List *new_part_constraints)
+get_proposed_default_constraint(List *new_part_constraints,
+								Provenances *provenances)
 {
 	Expr	   *defPartConstraint;
 
@@ -385,7 +389,8 @@ get_proposed_default_constraint(List *new_part_constraints)
 	/* Simplify, to put the negated expression into canonical form */
 	defPartConstraint =
 		(Expr *) eval_const_expressions(NULL,
-										(Node *) defPartConstraint);
+										(Node *) defPartConstraint,
+										provenances);
 	defPartConstraint = canonicalize_qual(defPartConstraint, true);
 
 	return make_ands_implicit(defPartConstraint);

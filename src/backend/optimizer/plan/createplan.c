@@ -170,7 +170,8 @@ static Node *fix_indexqual_clause(PlannerInfo *root,
 								  IndexOptInfo *index, int indexcol,
 								  Node *clause, List *indexcolnos);
 static Node *fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol);
-static List *get_switched_clauses(List *clauses, Relids outerrelids);
+static List *get_switched_clauses(List *clauses, Relids outerrelids,
+								  Provenances *provenances);
 static List *order_qual_clauses(PlannerInfo *root, List *clauses);
 static void copy_generic_path_info(Plan *dest, Path *src);
 static void copy_plan_costsize(Plan *dest, Plan *src);
@@ -4418,7 +4419,8 @@ create_mergejoin_plan(PlannerInfo *root,
 	 * outer_is_left status.
 	 */
 	mergeclauses = get_switched_clauses(best_path->path_mergeclauses,
-										best_path->jpath.outerjoinpath->parent->relids);
+										best_path->jpath.outerjoinpath->parent->relids,
+										root->glob->provenances);
 
 	/*
 	 * Create explicit sort nodes for the outer and inner paths if necessary.
@@ -4766,7 +4768,8 @@ create_hashjoin_plan(PlannerInfo *root,
 	 * on the left.
 	 */
 	hashclauses = get_switched_clauses(best_path->path_hashclauses,
-									   best_path->jpath.outerjoinpath->parent->relids);
+									   best_path->jpath.outerjoinpath->parent->relids,
+									   root->glob->provenances);
 
 	/*
 	 * If there is a single join clause and we can identify the outer variable
@@ -5186,7 +5189,8 @@ fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol)
  *	  outer_is_left field in each RestrictInfo to show which side was which.
  */
 static List *
-get_switched_clauses(List *clauses, Relids outerrelids)
+get_switched_clauses(List *clauses, Relids outerrelids,
+					 Provenances *provenances)
 {
 	List	   *t_list = NIL;
 	ListCell   *l;
@@ -5213,9 +5217,10 @@ get_switched_clauses(List *clauses, Relids outerrelids)
 			temp->opcollid = clause->opcollid;
 			temp->inputcollid = clause->inputcollid;
 			temp->args = list_copy(clause->args);
+			temp->pidx = clause->pidx;
 			temp->location = clause->location;
 			/* Commute it --- note this modifies the temp node in-place. */
-			CommuteOpExpr(temp);
+			CommuteOpExpr(temp, provenances);
 			t_list = lappend(t_list, temp);
 			restrictinfo->outer_is_left = false;
 		}

@@ -47,12 +47,14 @@ extern bool CheckIndexCompatible(Oid oldId,
 								 const char *accessMethodName,
 								 const List *attributeList,
 								 const List *exclusionOpNames,
-								 bool isWithoutOverlaps);
+								 bool isWithoutOverlaps,
+								 Provenances *provenances);
 extern Oid	GetDefaultOpClass(Oid type_id, Oid am_id);
 extern Oid	ResolveOpClass(const List *opclass, Oid attrType,
 						   const char *accessMethodName, Oid accessMethodId);
 extern void GetOperatorFromCompareType(Oid opclass, Oid rhstype, CompareType cmptype,
-									   Oid *opid, StrategyNumber *strat);
+									   Oid *opid, StrategyNumber *strat,
+									   Oid *opfamily);
 
 /* commands/functioncmds.c */
 extern ObjectAddress CreateFunction(ParseState *pstate, CreateFunctionStmt *stmt);
@@ -63,7 +65,9 @@ extern ObjectAddress CreateTransform(CreateTransformStmt *stmt);
 extern void IsThereFunctionInNamespace(const char *proname, int pronargs,
 									   oidvector *proargtypes, Oid nspOid);
 extern void ExecuteDoStmt(ParseState *pstate, DoStmt *stmt, bool atomic);
-extern void ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver *dest);
+extern void ExecuteCallStmt(CallStmt *stmt, ParamListInfo params,
+							bool atomic, DestReceiver *dest,
+							Provenances *provenances);
 extern TupleDesc CallStmtResultDesc(CallStmt *stmt);
 extern Oid	get_transform_oid(Oid type_id, Oid lang_id, bool missing_ok);
 extern void interpret_function_parameter_list(ParseState *pstate,
@@ -90,7 +94,7 @@ extern ObjectAddress CreateStatistics(CreateStatsStmt *stmt, bool check_rights);
 extern ObjectAddress AlterStatistics(AlterStatsStmt *stmt);
 extern void RemoveStatisticsById(Oid statsOid);
 extern void RemoveStatisticsDataById(Oid statsOid, bool inh);
-extern Oid	StatisticsGetRelation(Oid statId, bool missing_ok);
+extern Oid	StatisticsGetRelation(Oid statId, Oid *stxowner, bool missing_ok);
 
 /* commands/aggregatecmds.c */
 extern ObjectAddress DefineAggregate(ParseState *pstate, List *name, List *args, bool oldstyle,

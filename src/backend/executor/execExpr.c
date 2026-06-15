@@ -769,7 +769,7 @@ ExecPrepareExpr(Expr *node, EState *estate)
 
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
-	node = expression_planner(node);
+	node = expression_planner(node, estate->es_provenances);
 
 	result = ExecInitExpr(node, NULL);
 
@@ -797,7 +797,7 @@ ExecPrepareQual(List *qual, EState *estate)
 
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
-	qual = (List *) expression_planner((Expr *) qual);
+	qual = (List *) expression_planner((Expr *) qual, estate->es_provenances);
 
 	result = ExecInitQual(qual, NULL);
 
@@ -820,7 +820,7 @@ ExecPrepareCheck(List *qual, EState *estate)
 
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
-	qual = (List *) expression_planner((Expr *) qual);
+	qual = (List *) expression_planner((Expr *) qual, estate->es_provenances);
 
 	result = ExecInitCheck(qual, NULL);
 
@@ -841,6 +841,8 @@ ExecPrepareExprList(List *nodes, EState *estate)
 	List	   *result = NIL;
 	MemoryContext oldcontext;
 	ListCell   *lc;
+
+	Assert(estate->es_provenances != NULL);
 
 	/* Ensure that the list cell nodes are in the right context too */
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);

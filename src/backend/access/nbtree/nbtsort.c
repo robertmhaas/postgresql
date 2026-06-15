@@ -68,6 +68,7 @@
 #define PARALLEL_KEY_QUERY_TEXT			UINT64CONST(0xA000000000000004)
 #define PARALLEL_KEY_WAL_USAGE			UINT64CONST(0xA000000000000005)
 #define PARALLEL_KEY_BUFFER_USAGE		UINT64CONST(0xA000000000000006)
+#define PARALLEL_KEY_PROVENANCES		UINT64CONST(0xA000000000000007)
 
 /*
  * DISABLE_LEADER_PARTICIPATION disables the leader's participation in
@@ -258,7 +259,8 @@ typedef struct BTWriteState
 
 
 static double _bt_spools_heapscan(Relation heap, Relation index,
-								  BTBuildState *buildstate, IndexInfo *indexInfo);
+								  BTBuildState *buildstate, IndexInfo *indexInfo,
+								  Provenances *provenances);
 static void _bt_spooldestroy(BTSpool *btspool);
 static void _bt_spool(BTSpool *btspool, const ItemPointerData *self,
 					  const Datum *values, const bool *isnull);
@@ -280,23 +282,26 @@ static void _bt_uppershutdown(BTWriteState *wstate, BTPageState *state);
 static void _bt_load(BTWriteState *wstate,
 					 BTSpool *btspool, BTSpool *btspool2);
 static void _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent,
-							   int request);
+							   int request, Provenances *provenances);
 static void _bt_end_parallel(BTLeader *btleader);
 static Size _bt_parallel_estimate_shared(Relation heap, Snapshot snapshot);
 static double _bt_parallel_heapscan(BTBuildState *buildstate,
 									bool *brokenhotchain);
-static void _bt_leader_participate_as_worker(BTBuildState *buildstate);
+static void _bt_leader_participate_as_worker(BTBuildState *buildstate,
+											 Provenances *provenances);
 static void _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 									   BTShared *btshared, Sharedsort *sharedsort,
 									   Sharedsort *sharedsort2, int sortmem,
-									   bool progress);
+									   bool progress,
+									   Provenances *provenances);
 
 
 /*
  *	btbuild() -- build a new btree index.
  */
 IndexBuildResult *
-btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+btbuild(Relation heap, Relation index, IndexInfo *indexInfo,
+		Provenances *provenances)
 {
 	IndexBuildResult *result;
 	BTBuildState buildstate;
@@ -324,7 +329,8 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
 
-	reltuples = _bt_spools_heapscan(heap, index, &buildstate, indexInfo);
+	reltuples = _bt_spools_heapscan(heap, index, &buildstate, indexInfo,
+									provenances);
 
 	/*
 	 * Finish the build by (1) completing the sort of the spool file, (2)
@@ -367,7 +373,7 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
  */
 static double
 _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
-					IndexInfo *indexInfo)
+					IndexInfo *indexInfo, Provenances *provenances)
 {
 	BTSpool    *btspool = palloc0_object(BTSpool);
 	SortCoordinate coordinate = NULL;
@@ -394,7 +400,7 @@ _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
 	/* Attempt to launch parallel worker scan when required */
 	if (indexInfo->ii_ParallelWorkers > 0)
 		_bt_begin_parallel(buildstate, indexInfo->ii_Concurrent,
-						   indexInfo->ii_ParallelWorkers);
+						   indexInfo->ii_ParallelWorkers, provenances);
 
 	/*
 	 * If parallel build requested and at least one worker process was
@@ -480,7 +486,7 @@ _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
 	if (!buildstate->btleader)
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 										   _bt_build_callback, buildstate,
-										   NULL);
+										   NULL, provenances);
 	else
 		reltuples = _bt_parallel_heapscan(buildstate,
 										  &indexInfo->ii_BrokenHotChain);
@@ -1396,7 +1402,8 @@ _bt_load(BTWriteState *wstate, BTSpool *btspool, BTSpool *btspool2)
  * never set, and caller should proceed with a serial index build.
  */
 static void
-_bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
+_bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request,
+				   Provenances *provenances)
 {
 	ParallelContext *pcxt;
 	int			scantuplesortstates;
@@ -1411,6 +1418,9 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
 	bool		leaderparticipates = true;
+	char	   *provenancesstr;
+	char	   *sharedprovenances;
+	int			provenanceslen;
 	int			querylen;
 
 #ifdef DISABLE_LEADER_PARTICIPATION
@@ -1476,7 +1486,7 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 						   mul_size(sizeof(BufferUsage), pcxt->nworkers));
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
-	/* Finally, estimate PARALLEL_KEY_QUERY_TEXT space */
+	/* Estimate PARALLEL_KEY_QUERY_TEXT space */
 	if (debug_query_string)
 	{
 		querylen = strlen(debug_query_string);
@@ -1485,6 +1495,12 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 	}
 	else
 		querylen = 0;			/* keep compiler quiet */
+
+	/* Estimate PARALLEL_KEY_PROVENANCES space */
+	provenancesstr = nodeToString(provenances);
+	provenanceslen = strlen(provenancesstr);
+	shm_toc_estimate_chunk(&pcxt->estimator, provenanceslen + 1);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
 	/* Everyone's had a chance to ask for space, so now create the DSM */
 	InitializeParallelDSM(pcxt);
@@ -1559,6 +1575,13 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_QUERY_TEXT, sharedquery);
 	}
 
+	/* Store serialized provenances for workers */
+	sharedprovenances = (char *) shm_toc_allocate(pcxt->toc,
+												  provenanceslen + 1);
+	memcpy(sharedprovenances, provenancesstr, provenanceslen + 1);
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_PROVENANCES,
+				   sharedprovenances);
+
 	/*
 	 * Allocate space for each worker's WalUsage and BufferUsage; no need to
 	 * initialize.
@@ -1595,7 +1618,7 @@ _bt_begin_parallel(BTBuildState *buildstate, bool isconcurrent, int request)
 
 	/* Join heap scan ourselves */
 	if (leaderparticipates)
-		_bt_leader_participate_as_worker(buildstate);
+		_bt_leader_participate_as_worker(buildstate, provenances);
 
 	/*
 	 * Caller needs to wait for all launched workers when we return.  Make
@@ -1688,7 +1711,8 @@ _bt_parallel_heapscan(BTBuildState *buildstate, bool *brokenhotchain)
  * Within leader, participate as a parallel worker.
  */
 static void
-_bt_leader_participate_as_worker(BTBuildState *buildstate)
+_bt_leader_participate_as_worker(BTBuildState *buildstate,
+								 Provenances *provenances)
 {
 	BTLeader   *btleader = buildstate->btleader;
 	BTSpool    *leaderworker;
@@ -1726,7 +1750,7 @@ _bt_leader_participate_as_worker(BTBuildState *buildstate)
 	/* Perform work common to all participants */
 	_bt_parallel_scan_and_sort(leaderworker, leaderworker2, btleader->btshared,
 							   btleader->sharedsort, btleader->sharedsort2,
-							   sortmem, true);
+							   sortmem, true, provenances);
 
 #ifdef BTREE_BUILD_STATS
 	if (log_btree_build_stats)
@@ -1744,6 +1768,8 @@ void
 _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 {
 	char	   *sharedquery;
+	char	   *provenancesstr;
+	Provenances *provenances;
 	BTSpool    *btspool;
 	BTSpool    *btspool2;
 	BTShared   *btshared;
@@ -1827,13 +1853,17 @@ _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 		tuplesort_attach_shared(sharedsort2, seg);
 	}
 
+	/* Deserialize provenances from leader */
+	provenancesstr = shm_toc_lookup(toc, PARALLEL_KEY_PROVENANCES, false);
+	provenances = stringToNode(provenancesstr, -1);
+
 	/* Prepare to track buffer usage during parallel execution */
 	InstrStartParallelQuery();
 
 	/* Perform sorting of spool, and possibly a spool2 */
 	sortmem = maintenance_work_mem / btshared->scantuplesortstates;
 	_bt_parallel_scan_and_sort(btspool, btspool2, btshared, sharedsort,
-							   sharedsort2, sortmem, false);
+							   sharedsort2, sortmem, false, provenances);
 
 	/* Report WAL/buffer usage during parallel execution */
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);
@@ -1868,7 +1898,8 @@ _bt_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 static void
 _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 						   BTShared *btshared, Sharedsort *sharedsort,
-						   Sharedsort *sharedsort2, int sortmem, bool progress)
+						   Sharedsort *sharedsort2, int sortmem,
+						   bool progress, Provenances *provenances)
 {
 	SortCoordinate coordinate;
 	BTBuildState buildstate;
@@ -1932,7 +1963,7 @@ _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 									SO_NONE);
 	reltuples = table_index_build_scan(btspool->heap, btspool->index, indexInfo,
 									   true, progress, _bt_build_callback,
-									   &buildstate, scan);
+									   &buildstate, scan, provenances);
 
 	/* Execute this worker's part of the sort */
 	if (progress)
