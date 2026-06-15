@@ -1,0 +1,15 @@
+Step 1, invent typedef int ProvenanceIndex and adjust existing uses of int
+to use this new typedef.
+
+Step 2, add a ProvenanceIndex argument to stringToNode().
+
+Step 3, somehow arrange to pass this parameter down to _readWhatever() either
+categorically or in the nodes that contain a ProvenanceIndex field.
+
+Step 4, use READ_PROVENANCE_INDEX_FIELD() on fields of type ProvenanceIndex,
+instead of READ_INT_FIELD(). That macro is defined to do
+
+	if (provenance_index >= 0)
+		local_node->fldname = provenance_index;
+	else
+		local_node->fldname = atoi(token);

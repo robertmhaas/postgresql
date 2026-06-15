@@ -1,0 +1,59 @@
+eval_const_expressions() Provenance: Remaining Work
+====================================================
+
+eval_const_expressions() and all of its wrappers (expression_planner,
+expression_planner_with_deps, estimate_expression_value, ExecPrepare*)
+now accept and thread a Provenances parameter.  inline_function()
+records provenance unconditionally via context->provenances.  The
+relcache and partition cache store per-expression provenances alongside
+the cached expression trees.  EState.es_provenances is populated from
+PlannedStmt.provenances, and ExecPrepare* functions read it from the
+EState.
+
+This document covers what remains to be done.
+
+
+Provenance Indexes in Expression Nodes
+---------------------------------------
+
+When we add provenance indexes to expression nodes (FuncExpr, OpExpr,
+etc.), those indexes should reference PlannerGlobal->provenances
+directly.  Since Query does not have a provenances field, provenance
+annotation happens during planning, where PlannerGlobal->provenances
+is the single authoritative object.  PlannedStmt->provenances is
+simply a copy of that same pointer, so no remapping is needed.
+
+When catalog-sourced expressions (index expressions, check constraints,
+etc.) bring their own provenances via InitProvenancesForCache,
+AppendProvenances grafts those entries into PlannerGlobal->provenances
+and returns an offset.  Expression-node indexes in the appended tree
+just need that offset added -- not a full per-PlannerInfo mapping
+table.
+
+
+fetch_function_defaults Provenance
+----------------------------------
+
+expand_function_arguments() / fetch_function_defaults() splice default
+argument values from pg_proc.proargdefaults into the function call's
+argument list.  This happens inside simplify_function() within
+eval_const_expressions_mutator, so it has access to context->provenances.
+Neither function currently records provenance for the defaults.  The
+function's provenance should be added to the list when defaults are used.
+
+
+ExecInitFunc and Standalone Expressions
+---------------------------------------
+
+Provenances are ultimately meant to be consumed at expression
+*initialization* time by ExecInitFunc (execExpr.c), which sets up
+fmgr_info and permission checks for function calls.  For plan-tree
+expressions, ExecInitExpr can reach provenances via
+parent->state->es_provenances.  For standalone expressions
+(ExecPrepare*), ExecInitExpr is called with parent=NULL, so there is no
+path from the ExprState to the EState.
+
+Currently this is not a problem because ExecInitFunc does not yet
+consult provenances.  Once it does, a mechanism will be needed.
+Options include adding a provenances field to ExprState, or passing
+provenances as an additional argument to ExecInitExpr.

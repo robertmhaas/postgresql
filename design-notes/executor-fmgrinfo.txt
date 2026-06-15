@@ -1,0 +1,51 @@
+Expr nodes that cause FunctionCallInfo/FmgrInfo to be built
+===========================================================
+
+1. FuncExpr (including SRF path in execSRF.c)
+2. OpExpr
+3. DistinctExpr
+4. NullIfExpr
+5. ScalarArrayOpExpr
+6. CoerceViaIO
+7. RowCompareExpr
+8. MinMaxExpr
+9. JsonExpr
+10. Aggref (transition, serialize, deserialize, final functions
+    in nodeAgg.c)
+11. WindowFunc (window function itself, plus
+    transition/inverse-transition/final for window aggregates
+    in nodeWindowAgg.c)
+
+For 1-5, the function OID is stored directly in the node.
+For 6-9, the function OIDs are looked up at execution time
+(via getTypeOutputInfo/getTypeInputInfo, get_opfamily_proc,
+TypeCacheEntry.cmp_proc, etc.).
+For 10-11, the function OIDs come from pg_aggregate/pg_proc
+lookups during executor init.
+
+Plan nodes that cause FunctionCallInfo/FmgrInfo to be built
+===========================================================
+
+These are for equality, hashing, comparison, or I/O functions
+that are not directly represented as Expr nodes.
+
+1. Agg - grouping equality (execTuplesMatchPrepare), hash
+   functions (execTuplesHashPrepare, BuildTupleHashTable),
+   per-aggregate distinct equality
+2. HashJoin - hash functions (ExecBuildHash32Expr)
+3. SubPlan - grouping equality (ExecBuildGroupingEqual), hash
+   functions (BuildTupleHashTable)
+4. Memoize - equality (ExecBuildParamSetEqual)
+5. SetOp (hashed) - hash functions (execTuplesHashPrepare,
+   BuildTupleHashTable)
+6. RecursiveUnion - hash functions (execTuplesHashPrepare,
+   BuildTupleHashTable)
+7. IncrementalSort - prefix key equality functions
+8. Group - grouping equality (execTuplesMatchPrepare)
+9. Unique - equality (execTuplesMatchPrepare)
+10. Limit (WITH TIES) - equality (execTuplesMatchPrepare)
+11. WindowAgg - partition/order equality
+    (execTuplesMatchPrepare)
+12. ModifyTable - FOR PORTION OF support function
+13. TableFuncScan - type input functions for XMLTABLE/JSON_TABLE
+    column coercions

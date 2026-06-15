@@ -1,0 +1,85 @@
+Input/Output Functions and Provenance
+======================================
+
+OidInputFunctionCall (and InputFunctionCall, InputFunctionCallSafe) can
+reach user-defined code in several ways. This means all call sites need
+proper provenance tracking.
+
+Direct Path
+-----------
+
+User-defined types have user-defined input functions (specified via
+CREATE TYPE). If OidInputFunctionCall is called with the OID of such a
+function, it directly executes user code.
+
+Indirect Paths via Container Types
+-----------------------------------
+
+Even when the immediate function OID is a built-in, several built-in
+input functions recursively invoke input functions for their element
+types, which may be user-defined:
+
+- record_in (rowtypes.c) calls InputFunctionCallSafe for each column
+  of the composite type.
+
+- array_in (arrayfuncs.c) calls InputFunctionCallSafe for each array
+  element.
+
+- range_in (rangetypes.c) calls InputFunctionCallSafe for the lower
+  and upper bounds.
+
+Domain Constraints
+------------------
+
+This is the most insidious path. When the type is a domain, the input
+function is domain_in, which:
+
+1. Calls the base type's input function to parse the value.
+2. Calls domain_check_input, which handles DOM_CONSTRAINT_CHECK by
+   calling ExecCheck(con->check_exprstate, econtext).
+
+That ExecCheck call executes the domain's CHECK constraint expression,
+which can contain calls to user-defined functions. For example:
+
+    CREATE FUNCTION my_check(int) RETURNS bool AS $$ ... $$ LANGUAGE plpgsql;
+    CREATE DOMAIN mydom AS int CHECK (my_check(VALUE));
+
+Any path that feeds a mydom value through domain_in will execute
+my_check(). This applies even for non-domain types that contain
+domain-typed substructure (e.g., a composite type with a domain column
+going through record_in).
+
+This path is particularly problematic because the CHECK expression is
+compiled and executed on the fly via ExecCheck, completely bypassing the
+normal planner/executor entry points where provenance would typically be
+tracked.
+
+There is no way to optimize by assuming a particular call site only
+handles built-in types, because whether a type is a domain (or contains
+domain-typed fields) can change after the code is written, and the
+caller generally doesn't know or check.
+
+Output Functions
+----------------
+
+The domain constraint issue does NOT apply to output functions. There is
+no domain_out function; domains use the base type's output function
+directly, since constraints only need to be validated on input.
+
+However, output functions (OidOutputFunctionCall, OutputFunctionCall)
+can still reach user-defined code via:
+
+- Direct calls to user-defined output functions for user-defined types.
+- Indirect calls through record_out, array_out, and range_out, which
+  invoke output functions for their element types.
+
+So output function call sites also need provenance, but without the
+hidden ExecCheck complication.
+
+Implications
+------------
+
+Every InputFunctionCall/OidInputFunctionCall call site must be treated
+as potentially executing arbitrary user-defined code and needs proper
+provenance. The same applies to output function calls, though with a
+somewhat smaller attack surface.
