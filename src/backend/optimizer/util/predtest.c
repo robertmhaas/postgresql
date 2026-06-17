@@ -1983,6 +1983,7 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 	 * Evaluate the test.  For this we need an EState.
 	 */
 	estate = CreateExecutorState();
+	/* PROVENANCE-TODO: es_provenances */
 
 	/* We can use the estate's working context to avoid memory leaks. */
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
@@ -1994,7 +1995,8 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 							  (Expr *) pred_const,
 							  (Expr *) clause_const,
 							  InvalidOid,
-							  pred_collation);
+							  pred_collation,
+							  0);			/* PROVENANCE-TODO: index */
 
 	/* Fill in opfuncids */
 	fix_opfuncids((Node *) test_expr);

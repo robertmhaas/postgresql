@@ -703,7 +703,7 @@ makeFuncCall(List *name, List *args, CoercionForm funcformat, int location)
 Expr *
 make_opclause(Oid opno, Oid opresulttype, bool opretset,
 			  Expr *leftop, Expr *rightop,
-			  Oid opcollid, Oid inputcollid)
+			  Oid opcollid, Oid inputcollid, ProvenanceIndex pidx)
 {
 	OpExpr	   *expr = makeNode(OpExpr);
 
@@ -717,6 +717,7 @@ make_opclause(Oid opno, Oid opresulttype, bool opretset,
 		expr->args = list_make2(leftop, rightop);
 	else
 		expr->args = list_make1(leftop);
+	expr->pidx = pidx;
 	expr->location = -1;
 	return (Expr *) expr;
 }

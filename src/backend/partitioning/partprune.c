@@ -2399,9 +2399,10 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 		{
 			Expr	   *elem_clause;
 
+			/* PROVENANCE-TODO: real index */
 			elem_clause = make_opclause(saop_op, BOOLOID, false,
 										leftop, lfirst(lc1),
-										InvalidOid, saop_coll);
+										InvalidOid, saop_coll, 0);
 			elem_clauses = lappend(elem_clauses, elem_clause);
 		}
 

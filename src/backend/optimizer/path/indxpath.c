@@ -2842,11 +2842,20 @@ match_boolean_index_clause(PlannerInfo *root,
 	/* Direct match? */
 	if (match_index_to_operand(clause, indexcol, index))
 	{
-		/* convert to indexkey = TRUE */
+		/*
+		 * convert to indexkey = TRUE
+		 *
+		 * For provenance purposes, we regard the = operator that is
+		 * introduced here as a direct user input. That's questionable, since
+		 * of course it isn't. At the same time, it is reasonable to blame
+		 * the call to booleq() on the user's decision to include a Boolean
+		 * column in a WHERE clause or similar. Hence, the provenance index
+		 * is passed as 0.
+		 */
 		op = make_opclause(BooleanEqualOperator, BOOLOID, false,
 						   (Expr *) clause,
 						   (Expr *) makeBoolConst(true, false),
-						   InvalidOid, InvalidOid);
+						   InvalidOid, InvalidOid, 0);
 	}
 	/* NOT clause? */
 	else if (is_notclause(clause))
@@ -2855,11 +2864,18 @@ match_boolean_index_clause(PlannerInfo *root,
 
 		if (match_index_to_operand(arg, indexcol, index))
 		{
-			/* convert to indexkey = FALSE */
+			/*
+			 * convert to indexkey = FALSE
+			 *
+			 * As above, for provenance purposes, we treat the call to booleq()
+			 * as if the user had directly requested it i.e. we imagine that
+			 * the user wrote "WHERE whatever = false" rather than "WHERE NOT
+			 * whatever".
+			 */
 			op = make_opclause(BooleanEqualOperator, BOOLOID, false,
 							   (Expr *) arg,
 							   (Expr *) makeBoolConst(false, false),
-							   InvalidOid, InvalidOid);
+							   InvalidOid, InvalidOid, 0);
 		}
 	}
 
@@ -2873,6 +2889,10 @@ match_boolean_index_clause(PlannerInfo *root,
 		BooleanTest *btest = (BooleanTest *) clause;
 		Node	   *arg = (Node *) btest->arg;
 
+		/*
+		 * As in the above cases, we treat the call to booleq() here as
+		 * a direct user request for provenance purposes.
+		 */
 		if (btest->booltesttype == IS_TRUE &&
 			match_index_to_operand(arg, indexcol, index))
 		{
@@ -2880,7 +2900,7 @@ match_boolean_index_clause(PlannerInfo *root,
 			op = make_opclause(BooleanEqualOperator, BOOLOID, false,
 							   (Expr *) arg,
 							   (Expr *) makeBoolConst(true, false),
-							   InvalidOid, InvalidOid);
+							   InvalidOid, InvalidOid, 0);
 		}
 		else if (btest->booltesttype == IS_FALSE &&
 				 match_index_to_operand(arg, indexcol, index))
@@ -2889,7 +2909,7 @@ match_boolean_index_clause(PlannerInfo *root,
 			op = make_opclause(BooleanEqualOperator, BOOLOID, false,
 							   (Expr *) arg,
 							   (Expr *) makeBoolConst(false, false),
-							   InvalidOid, InvalidOid);
+							   InvalidOid, InvalidOid, 0);
 		}
 	}
 
@@ -3707,7 +3727,8 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 							   copyObject(linitial(var_args)),
 							   copyObject(linitial(non_var_args)),
 							   InvalidOid,
-							   linitial_oid(clause->inputcollids));
+							   linitial_oid(clause->inputcollids),
+							   0);		/* PROVENANCE-TODO */
 			iclause->indexquals = list_make1(make_simple_restrictinfo(root, op));
 		}
 	}

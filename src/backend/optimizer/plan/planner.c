@@ -5082,6 +5082,7 @@ create_one_window_path(PlannerInfo *root,
 				Expr	   *opexpr;
 				Expr	   *leftop;
 				Expr	   *rightop;
+				ProvenanceIndex	pidx;
 
 				if (wfuncrc->wfunc_left)
 				{
@@ -5094,13 +5095,20 @@ create_one_window_path(PlannerInfo *root,
 					rightop = (Expr *) copyObject(wfunc);
 				}
 
+				/* PROVENANCE-TODO: fix owner */
+				pidx = ProvenanceForOperator(root->glob->provenances,
+											 wfuncrc->opno,
+											 BOOTSTRAP_SUPERUSERID,
+											 wfunc->pidx);
+
 				opexpr = make_opclause(wfuncrc->opno,
 									   BOOLOID,
 									   false,
 									   leftop,
 									   rightop,
 									   InvalidOid,
-									   wfuncrc->inputcollid);
+									   wfuncrc->inputcollid,
+									   pidx);
 
 				runcondition = lappend(runcondition, opexpr);
 

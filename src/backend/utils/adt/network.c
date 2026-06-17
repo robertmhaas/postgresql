@@ -1098,8 +1098,7 @@ match_network_subset(Node *leftop,
 											InvalidOid, /* not collatable */
 											-1, opr1right,
 											false, false),
-						 InvalidOid, InvalidOid);
-	((OpExpr *) expr)->pidx = opfamily_pidx;
+						 InvalidOid, InvalidOid, opfamily_pidx);
 	result = list_make1(expr);
 
 	/* create clause "key <= network_scan_last( rightopval )" */
@@ -1116,8 +1115,7 @@ match_network_subset(Node *leftop,
 											InvalidOid, /* not collatable */
 											-1, opr2right,
 											false, false),
-						 InvalidOid, InvalidOid);
-	((OpExpr *) expr)->pidx = opfamily_pidx;
+						 InvalidOid, InvalidOid, opfamily_pidx);
 	result = lappend(result, expr);
 
 	return result;

@@ -3955,12 +3955,14 @@ make_partition_op_expr(PartitionKey key, int keynum,
 						Expr	   *elem = lfirst(lc),
 								   *elemop;
 
+						/* PROVENANCE-TODO: real index */
 						elemop = make_opclause(operoid,
 											   BOOLOID,
 											   false,
 											   arg1, elem,
 											   InvalidOid,
-											   key->partcollation[keynum]);
+											   key->partcollation[keynum],
+											   0);
 						elemops = lappend(elemops, elemop);
 					}
 
@@ -3970,12 +3972,13 @@ make_partition_op_expr(PartitionKey key, int keynum,
 			}
 
 		case PARTITION_STRATEGY_RANGE:
+			/* PROVENANCE-TODO: real index */
 			result = make_opclause(operoid,
 								   BOOLOID,
 								   false,
 								   arg1, arg2,
 								   InvalidOid,
-								   key->partcollation[keynum]);
+								   key->partcollation[keynum], 0);
 			break;
 
 		case PARTITION_STRATEGY_HASH:

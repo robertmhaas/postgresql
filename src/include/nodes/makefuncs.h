@@ -86,7 +86,8 @@ extern FuncCall *makeFuncCall(List *name, List *args,
 
 extern Expr *make_opclause(Oid opno, Oid opresulttype, bool opretset,
 						   Expr *leftop, Expr *rightop,
-						   Oid opcollid, Oid inputcollid);
+						   Oid opcollid, Oid inputcollid,
+						   ProvenanceIndex pidx);
 
 extern Expr *make_andclause(List *andclauses);
 extern Expr *make_orclause(List *orclauses);

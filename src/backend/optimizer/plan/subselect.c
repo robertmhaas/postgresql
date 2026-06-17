@@ -1919,6 +1919,7 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 			   *rightargs,
 			   *opids,
 			   *opcollations,
+			   *pidxlist,
 			   *newWhere,
 			   *tlist,
 			   *testlist,
@@ -1926,7 +1927,8 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 	ListCell   *lc,
 			   *rc,
 			   *oc,
-			   *cc;
+			   *cc,
+			   *pc;
 	AttrNumber	resno;
 
 	/*
@@ -1994,7 +1996,7 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 	 * we aren't trying hard yet to ensure that we have only outer or only
 	 * inner on each side; we'll check that if we get to the end.
 	 */
-	leftargs = rightargs = opids = opcollations = newWhere = NIL;
+	leftargs = rightargs = opids = opcollations = newWhere = pidxlist = NIL;
 	foreach(lc, (List *) whereClause)
 	{
 		OpExpr	   *expr = (OpExpr *) lfirst(lc);
@@ -2011,10 +2013,23 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 				rightargs = lappend(rightargs, rightarg);
 				opids = lappend_oid(opids, expr->opno);
 				opcollations = lappend_oid(opcollations, expr->inputcollid);
+				pidxlist = lappend_int(pidxlist, expr->pidx);
 				continue;
 			}
 			if (contain_vars_of_level(rightarg, 1))
 			{
+				ProvenanceIndex	pidx;
+
+				/*
+				 * We're going to commute the operator, so extend the
+				 * provenance chain with the original operator.
+				 * PROVENANCE-TODO: Fix owner.
+				 */
+				pidx = ProvenanceForOperator(root->glob->provenances,
+											 expr->opno,
+											 BOOTSTRAP_SUPERUSERID,
+											 expr->pidx);
+
 				/*
 				 * We must commute the clause to put the outer var on the
 				 * left, because the hashing code in nodeSubplan.c expects
@@ -2028,6 +2043,7 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 					rightargs = lappend(rightargs, leftarg);
 					opids = lappend_oid(opids, expr->opno);
 					opcollations = lappend_oid(opcollations, expr->inputcollid);
+					pidxlist = lappend_int(pidxlist, pidx);
 					continue;
 				}
 				/* If no commutator, no chance to optimize the WHERE clause */
@@ -2096,12 +2112,14 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 	 */
 	tlist = testlist = paramids = NIL;
 	resno = 1;
-	forfour(lc, leftargs, rc, rightargs, oc, opids, cc, opcollations)
+	forfive(lc, leftargs, rc, rightargs, oc, opids, cc, opcollations,
+			pc, pidxlist)
 	{
 		Node	   *leftarg = (Node *) lfirst(lc);
 		Node	   *rightarg = (Node *) lfirst(rc);
 		Oid			opid = lfirst_oid(oc);
 		Oid			opcollation = lfirst_oid(cc);
+		ProvenanceIndex	pidx = lfirst_int(pc);
 		Param	   *param;
 
 		param = generate_new_exec_param(root,
@@ -2116,7 +2134,7 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 		testlist = lappend(testlist,
 						   make_opclause(opid, BOOLOID, false,
 										 (Expr *) leftarg, (Expr *) param,
-										 InvalidOid, opcollation));
+										 InvalidOid, opcollation, pidx));
 		paramids = lappend_int(paramids, param->paramid);
 	}
 
