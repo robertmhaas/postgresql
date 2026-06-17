@@ -4025,6 +4025,15 @@ transformJsonAggConstructor(ParseState *pstate, JsonAggConstructor *agg_ctor,
 		wfunc->location = agg_ctor->location;
 
 		/*
+		 * We treat this as a direct parser input for provenance purposes. In
+		 * reality, the call to this aggregate was not directly present in the
+		 * user's SQL, but there wasn't a catalog lookup, either. Instead, it
+		 * was determined by hard-coded logic in the caller. But, such
+		 * hard-coded logic doesn't show up in provenance chains.
+		 */
+		wfunc->pidx = 0;
+
+		/*
 		 * ordered aggs not allowed in windows yet
 		 */
 		if (agg_ctor->agg_order != NIL)
@@ -4059,16 +4068,8 @@ transformJsonAggConstructor(ParseState *pstate, JsonAggConstructor *agg_ctor,
 		aggref->aggsplit = AGGSPLIT_SIMPLE; /* planner might change this */
 		aggref->aggno = -1;		/* planner will set aggno and aggtransno */
 		aggref->aggtransno = -1;
+		aggref->pidx = 0;		/* as in WindowFunc case above */
 		aggref->location = agg_ctor->location;
-
-		/*
-		 * We treat this as a direct parser input for provenance purposes. In
-		 * reality, the call to this aggregate was not directly present in the
-		 * user's SQL, but there wasn't a catalog lookup, either. Instead, it
-		 * was determined by hard-coded logic in the caller. But, such
-		 * hard-coded logic doesn't show up in provenance chains.
-		 */
-		aggref->pidx = 0;
 
 		transformAggregateCall(pstate, aggref, args, agg_ctor->agg_order, false);
 

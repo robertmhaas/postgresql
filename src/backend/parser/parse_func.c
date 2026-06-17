@@ -852,6 +852,7 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 		wfunc->aggfilter = agg_filter;
 		wfunc->ignore_nulls = ignore_nulls;
 		wfunc->runCondition = NIL;
+		wfunc->pidx = 0;			/* direct parser input */
 		wfunc->location = location;
 
 		/*
