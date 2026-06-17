@@ -4061,6 +4061,15 @@ transformJsonAggConstructor(ParseState *pstate, JsonAggConstructor *agg_ctor,
 		aggref->aggtransno = -1;
 		aggref->location = agg_ctor->location;
 
+		/*
+		 * We treat this as a direct parser input for provenance purposes. In
+		 * reality, the call to this aggregate was not directly present in the
+		 * user's SQL, but there wasn't a catalog lookup, either. Instead, it
+		 * was determined by hard-coded logic in the caller. But, such
+		 * hard-coded logic doesn't show up in provenance chains.
+		 */
+		aggref->pidx = 0;
+
 		transformAggregateCall(pstate, aggref, args, agg_ctor->agg_order, false);
 
 		node = (Node *) aggref;
