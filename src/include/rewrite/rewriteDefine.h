@@ -16,6 +16,7 @@
 
 #include "catalog/objectaddress.h"
 #include "nodes/parsenodes.h"
+#include "parser/parse_node.h"
 #include "utils/relcache.h"
 
 #define RULE_FIRES_ON_ORIGIN	'O'
