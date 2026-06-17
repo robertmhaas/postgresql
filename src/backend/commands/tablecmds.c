@@ -1215,7 +1215,7 @@ DefineRelation(ParseState *pstate, CreateStmt *stmt, char relkind, Oid ownerId,
 	if (stmt->partbound)
 	{
 		PartitionBoundSpec *bound;
-		ParseState *pstate;
+		ParseState *pb_pstate;
 		Oid			parentId = linitial_oid(inheritOids),
 					defaultPartOid;
 		Relation	parent,
@@ -1261,26 +1261,26 @@ DefineRelation(ParseState *pstate, CreateStmt *stmt, char relkind, Oid ownerId,
 			defaultRel = table_open(defaultPartOid, AccessExclusiveLock);
 
 		/* Transform the bound values */
-		pstate = make_parsestate(NULL);
-		pstate->p_sourcetext = queryString;
-		pstate->p_provenances = provenances;
+		pb_pstate = make_parsestate(NULL);
+		pb_pstate->p_sourcetext = queryString;
+		pb_pstate->p_provenances = provenances;
 
 		/*
 		 * Add an nsitem containing this relation, so that transformExpr
 		 * called on partition bound expressions is able to report errors
 		 * using a proper context.
 		 */
-		nsitem = addRangeTableEntryForRelation(pstate, rel, AccessShareLock,
+		nsitem = addRangeTableEntryForRelation(pb_pstate, rel, AccessShareLock,
 											   NULL, false, false);
-		addNSItemToQuery(pstate, nsitem, false, true, true);
+		addNSItemToQuery(pb_pstate, nsitem, false, true, true);
 
-		bound = transformPartitionBound(pstate, parent, stmt->partbound);
+		bound = transformPartitionBound(pb_pstate, parent, stmt->partbound);
 
 		/*
 		 * Check first that the new partition's bound is valid and does not
 		 * overlap with any of existing partitions of the parent.
 		 */
-		check_new_partition_bound(relname, parent, bound, pstate);
+		check_new_partition_bound(relname, parent, bound, pb_pstate);
 
 		/*
 		 * If the default partition exists, its partition constraints will
@@ -1312,16 +1312,16 @@ DefineRelation(ParseState *pstate, CreateStmt *stmt, char relkind, Oid ownerId,
 	 */
 	if (partitioned)
 	{
-		ParseState *pstate;
+		ParseState *pb_pstate;
 		int			partnatts;
 		AttrNumber	partattrs[PARTITION_MAX_KEYS];
 		Oid			partopclass[PARTITION_MAX_KEYS];
 		Oid			partcollation[PARTITION_MAX_KEYS];
 		List	   *partexprs = NIL;
 
-		pstate = make_parsestate(NULL);
-		pstate->p_sourcetext = queryString;
-		pstate->p_provenances = provenances;
+		pb_pstate = make_parsestate(NULL);
+		pb_pstate->p_sourcetext = queryString;
+		pb_pstate->p_provenances = provenances;
 
 		partnatts = list_length(stmt->partspec->partParams);
 
@@ -1341,7 +1341,7 @@ DefineRelation(ParseState *pstate, CreateStmt *stmt, char relkind, Oid ownerId,
 		stmt->partspec = transformPartitionSpec(rel, stmt->partspec,
 												provenances);
 
-		ComputePartitionAttrs(pstate, rel, stmt->partspec->partParams,
+		ComputePartitionAttrs(pb_pstate, rel, stmt->partspec->partParams,
 							  partattrs, &partexprs, partopclass,
 							  partcollation, stmt->partspec->strategy);
 
