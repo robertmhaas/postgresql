@@ -797,8 +797,8 @@ make_op(ParseState *pstate, List *opname, Node *ltree, Node *rtree,
 	result->opresulttype = rettype;
 	result->opretset = get_func_retset(opform->oprcode);
 	/* opcollid and inputcollid will be set by parse_collate.c */
-	result->pidx = 0;			/* direct parser input */
 	result->args = args;
+	result->pidx = 0;			/* direct parser input */
 	result->location = location;
 
 	/* if it returns a set, check that's OK */

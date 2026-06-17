@@ -3113,8 +3113,8 @@ eval_const_expressions_mutator(Node *node,
 					eqexpr->opcollid = expr->opcollid;
 					eqexpr->inputcollid = expr->inputcollid;
 					eqexpr->args = args;
-					eqexpr->location = expr->location;
 					eqexpr->pidx = expr->pidx;
+					eqexpr->location = expr->location;
 
 					return eval_const_expressions_mutator(negate_clause((Node *) eqexpr,
 																		context->provenances),

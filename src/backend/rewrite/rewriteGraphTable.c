@@ -1333,8 +1333,8 @@ build_edge_vertex_link_quals(HeapTuple edgetup, int edgerti, int refrti,
 		linkqual->opretset = false;
 		/* opcollid and inputcollid will be set by parse_collate.c */
 		linkqual->args = args;
-		linkqual->location = -1;
 		linkqual->pidx = pidx;
+		linkqual->location = -1;
 
 		ReleaseSysCache(tup);
 		quals = lappend(quals, linkqual);

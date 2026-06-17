@@ -569,6 +569,7 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 		saoe->useOr = true;
 		saoe->args = list_make2(cycle_col_rowexpr,
 								makeVar(1, cpa_attno, RECORDARRAYOID, -1, 0, 0));
+		saoe->pidx = 0;		/* PROVENANCE-TODO: proper index */
 
 		caseexpr = makeNode(CaseExpr);
 		caseexpr->location = -1;
