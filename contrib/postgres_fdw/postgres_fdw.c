@@ -6178,7 +6178,7 @@ import_fetched_statistics(const char *schemaname,
 
 		attclear_plan = SPI_prepare(attclear_sql, ATTCLEAR_SQL_NUM_FIELDS,
 									(Oid *) attclear_argtypes,
-								    provenances);
+									provenances);
 		if (attclear_plan == NULL)
 			elog(ERROR, "failed to prepare attclear_sql query");
 

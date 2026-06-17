@@ -3736,7 +3736,7 @@ process_implied_equality(PlannerInfo *root,
 									copyObject(item2),
 									InvalidOid,
 									collation,
-									0);	/* PROVENANCE-TODO */
+									0); /* PROVENANCE-TODO */
 
 	/* If both constant, try to reduce to a boolean constant. */
 	if (both_const)
@@ -3879,7 +3879,7 @@ build_implied_join_equality(PlannerInfo *root,
 						   copyObject(item2),
 						   InvalidOid,
 						   collation,
-						   0);		/* PROVENANCE-TODO */
+						   0);	/* PROVENANCE-TODO */
 
 	/*
 	 * Build the RestrictInfo node itself.

@@ -794,6 +794,7 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 		aggref->aggsplit = AGGSPLIT_SIMPLE; /* planner might change this */
 		aggref->aggno = -1;		/* planner will set aggno and aggtransno */
 		aggref->aggtransno = -1;
+		aggref->pidx = 0;		/* direct parser input */
 		aggref->location = location;
 
 		/*

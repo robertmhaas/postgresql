@@ -3184,5 +3184,5 @@ build_bound_expr(Expr *elemExpr, Datum val,
 						 constExpr,
 						 InvalidOid,
 						 rng_collation,
-						 0);		/* PROVENANCE-TODO */
+						 0);	/* PROVENANCE-TODO */
 }

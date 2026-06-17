@@ -371,16 +371,16 @@ match_pattern_prefix(Node *leftop,
 
 	/*
 	 * The switch statement above uses type of the lefthand argument and the
-	 * operator faily to determine which function will be called by any
-	 * OpExpr we synthesize here. One could make an argument for pointing
-	 * the provenance at the type first and then at the opfamily only if
-	 * affected the outcome, or for adding no entry at all since what what
-	 * determines the operator OID is not a catalog lookup but C code, but
-	 * for now we blame the operator family.
+	 * operator faily to determine which function will be called by any OpExpr
+	 * we synthesize here. One could make an argument for pointing the
+	 * provenance at the type first and then at the opfamily only if affected
+	 * the outcome, or for adding no entry at all since what what determines
+	 * the operator OID is not a catalog lookup but C code, but for now we
+	 * blame the operator family.
 	 */
 	opfamily_pidx =
 		ProvenanceForOpfamily(provenances, opfamily,
-							  BOOTSTRAP_SUPERUSERID, /* PROVENANCE-TODO */
+							  BOOTSTRAP_SUPERUSERID,	/* PROVENANCE-TODO */
 							  pidx);
 
 	/*

@@ -2018,7 +2018,7 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 			}
 			if (contain_vars_of_level(rightarg, 1))
 			{
-				ProvenanceIndex	pidx;
+				ProvenanceIndex pidx;
 
 				/*
 				 * We're going to commute the operator, so extend the
@@ -2119,7 +2119,7 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 		Node	   *rightarg = (Node *) lfirst(rc);
 		Oid			opid = lfirst_oid(oc);
 		Oid			opcollation = lfirst_oid(cc);
-		ProvenanceIndex	pidx = lfirst_int(pc);
+		ProvenanceIndex pidx = lfirst_int(pc);
 		Param	   *param;
 
 		param = generate_new_exec_param(root,

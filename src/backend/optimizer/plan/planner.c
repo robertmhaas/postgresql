@@ -5082,7 +5082,7 @@ create_one_window_path(PlannerInfo *root,
 				Expr	   *opexpr;
 				Expr	   *leftop;
 				Expr	   *rightop;
-				ProvenanceIndex	pidx;
+				ProvenanceIndex pidx;
 
 				if (wfuncrc->wfunc_left)
 				{

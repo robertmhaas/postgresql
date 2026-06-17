@@ -1087,7 +1087,7 @@ match_network_subset(Node *leftop,
 
 	/* The choice of operator is determined by the opfamily. */
 	opfamily_pidx = ProvenanceForOpfamily(provenances, opfamily,
-										  BOOTSTRAP_SUPERUSERID, /* PROVENANCE-TODO */
+										  BOOTSTRAP_SUPERUSERID,	/* PROVENANCE-TODO */
 										  pidx);
 
 	opr1right = network_scan_first(rightopval);

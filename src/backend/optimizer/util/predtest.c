@@ -1996,7 +1996,7 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 							  (Expr *) clause_const,
 							  InvalidOid,
 							  pred_collation,
-							  0);			/* PROVENANCE-TODO: index */
+							  0);	/* PROVENANCE-TODO: index */
 
 	/* Fill in opfuncids */
 	fix_opfuncids((Node *) test_expr);
