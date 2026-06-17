@@ -4,15 +4,15 @@ immediately to make sure you understand the overall goals. See also
 src/backend/nodes/provenance.c. Known gaps in the implementation are
 marked with PROVENANCE-TODO comments.
 
-A lot of work has been done to try to make sure that provenances
-reach eval_const_expressions() and the functions that call it, which now
-seems to be largely complete. From there, we need to thread a Provenances *
-and a ProvenanceIndex through to ExecInitExprRec so that these values
-can be passed through to ExecInitFunc and then to fmgr_info. For this
-to be possible, nodes like FuncExpr and OpExpr need to carry a
-ProvenanceIndex. As of this writing, the field has been added, but it's
-not yet properly populated, which is something we need to try to figure
-out how to fix, but unfortunately there are a bunch of complicated cases.
+A lot of work has been done to try to make sure that provenances reach
+eval_const_expressions() and the functions that call it, which now seems
+to be largely complete. From there, we need to thread a Provenances * and
+a ProvenanceIndex through to ExecInitExprRec so that these values can be
+passed through to ExecInitFunc and then to fmgr_info. For this to be
+possible, nodes like FuncExpr and OpExpr need to carry a ProvenanceIndex.
+As of this writing, the field has been added, but it's not yet properly
+populated everywhere, which is something we need to try to figure out how
+to fix, but unfortunately there are a bunch of complicated cases.
 
 Eventually, I'd like to get to a point where fmgr_info() stores a
 Provenances pointer and the relative ProvenanceIndex in every FmgrInfo,
