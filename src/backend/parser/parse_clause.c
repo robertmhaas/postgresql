@@ -3858,11 +3858,12 @@ targetIsInSortList(TargetEntry *tle, Oid sortop, List *sortList)
 	foreach(l, sortList)
 	{
 		SortGroupClause *scl = (SortGroupClause *) lfirst(l);
+		Oid			oprowner;
 
 		if (scl->tleSortGroupRef == ref &&
 			(sortop == InvalidOid ||
 			 sortop == scl->sortop ||
-			 sortop == get_commutator(scl->sortop)))
+			 sortop == get_commutator(scl->sortop, &oprowner)))
 			return true;
 	}
 	return false;

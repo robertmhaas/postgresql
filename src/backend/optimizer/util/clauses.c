@@ -2421,8 +2421,7 @@ CommuteOpExpr(OpExpr *clause, Provenances *provenances)
 		list_length(clause->args) != 2)
 		elog(ERROR, "cannot commute non-binary-operator clause");
 
-	opoid = get_commutator(clause->opno);
-	op_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
+	opoid = get_commutator(clause->opno, &op_owner);
 
 	if (!OidIsValid(opoid))
 		elog(ERROR, "could not find commutator for operator %u",
@@ -2610,7 +2609,8 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
 			}
 			else				/* !saop->useOr */
 			{
-				Oid			negator = get_negator(saop->opno);
+				Oid			oprowner;
+				Oid			negator = get_negator(saop->opno, &oprowner);
 
 				/*
 				 * Check if this is a NOT IN using an operator whose negator

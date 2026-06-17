@@ -2597,8 +2597,10 @@ compute_semijoin_info(PlannerInfo *root, SpecialJoinInfo *sjinfo, List *clause)
 				 bms_is_subset(left_varnos, sjinfo->syn_righthand) &&
 				 !bms_overlap(right_varnos, sjinfo->syn_righthand))
 		{
+			Oid			oprowner;
+
 			/* flipped case, left_expr is RHS variable */
-			opno = get_commutator(opno);
+			opno = get_commutator(opno, &oprowner);
 			if (!OidIsValid(opno))
 				return;
 			right_expr = left_expr;
@@ -4154,7 +4156,12 @@ match_foreign_keys_to_quals(PlannerInfo *root)
 					 * unlikely.)
 					 */
 					if (!OidIsValid(fpeqop))
-						fpeqop = get_commutator(fkinfo->conpfeqop[colno]);
+					{
+						Oid			oprowner;
+
+						fpeqop = get_commutator(fkinfo->conpfeqop[colno],
+												&oprowner);
+					}
 					if (clause->opno == fpeqop)
 					{
 						fkinfo->rinfos[colno] = lappend(fkinfo->rinfos[colno],

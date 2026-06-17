@@ -258,6 +258,7 @@ analyzeCTE(ParseState *pstate, CommonTableExpr *cte)
 	{
 		TypeCacheEntry *typentry;
 		Oid			op;
+		Oid			oprowner;
 
 		cycle_clause->cycle_mark_value =
 			transformExpr(pstate, cycle_clause->cycle_mark_value,
@@ -302,7 +303,7 @@ analyzeCTE(ParseState *pstate, CommonTableExpr *cte)
 					errcode(ERRCODE_UNDEFINED_FUNCTION),
 					errmsg("could not identify an equality operator for type %s",
 						   format_type_be(cycle_clause->cycle_mark_type)));
-		op = get_negator(typentry->eq_opr);
+		op = get_negator(typentry->eq_opr, &oprowner);
 		if (!OidIsValid(op))
 			ereport(ERROR,
 					errcode(ERRCODE_UNDEFINED_FUNCTION),

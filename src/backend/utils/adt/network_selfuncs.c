@@ -215,6 +215,7 @@ networkjoinsel(PG_FUNCTION_ARGS)
 	VariableStatData vardata1;
 	VariableStatData vardata2;
 	bool		join_is_reversed;
+	Oid			oprowner;
 
 	/*
 	 * Before all else, verify that the operator is one of the ones supported
@@ -247,7 +248,7 @@ networkjoinsel(PG_FUNCTION_ARGS)
 				selec = networkjoinsel_semi(operator, opr_codenum,
 											&vardata1, &vardata2);
 			else
-				selec = networkjoinsel_semi(get_commutator(operator),
+				selec = networkjoinsel_semi(get_commutator(operator, &oprowner),
 											-opr_codenum,
 											&vardata2, &vardata1);
 			break;

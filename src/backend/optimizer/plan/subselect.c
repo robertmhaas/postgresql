@@ -2018,17 +2018,9 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 			}
 			if (contain_vars_of_level(rightarg, 1))
 			{
+				Oid			comm_op;
+				Oid			oprowner;
 				ProvenanceIndex pidx;
-
-				/*
-				 * We're going to commute the operator, so extend the
-				 * provenance chain with the original operator.
-				 * PROVENANCE-TODO: Fix owner.
-				 */
-				pidx = ProvenanceForOperator(root->glob->provenances,
-											 expr->opno,
-											 BOOTSTRAP_SUPERUSERID,
-											 expr->pidx);
 
 				/*
 				 * We must commute the clause to put the outer var on the
@@ -2036,8 +2028,22 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 				 * that.  This probably shouldn't ever fail, since hashable
 				 * operators ought to have commutators, but be paranoid.
 				 */
-				expr->opno = get_commutator(expr->opno);
-				if (OidIsValid(expr->opno) && hash_ok_operator(expr))
+				comm_op = get_commutator(expr->opno, &oprowner);
+				if (!OidIsValid(comm_op))
+					return NULL;
+
+				/* Extend the provenance chain with the original operator. */
+				pidx = ProvenanceForOperator(root->glob->provenances,
+											 expr->opno,
+											 oprowner,
+											 expr->pidx);
+
+				/*
+				 * Mutate the expression in place and verify that it can be
+				 * hashed.
+				 */
+				expr->opno = comm_op;
+				if (hash_ok_operator(expr))
 				{
 					leftargs = lappend(leftargs, rightarg);
 					rightargs = lappend(rightargs, leftarg);
@@ -2046,7 +2052,7 @@ convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
 					pidxlist = lappend_int(pidxlist, pidx);
 					continue;
 				}
-				/* If no commutator, no chance to optimize the WHERE clause */
+				/* If not hashable, no chance to optimize the WHERE clause */
 				return NULL;
 			}
 		}

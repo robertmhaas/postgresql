@@ -1959,13 +1959,15 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 			expr = rightop;
 		else if (equal(rightop, partkey))
 		{
+			Oid			oprowner;
+
 			/*
 			 * It's only useful if we can commute the operator to put the
 			 * partkey on the left.  If we can't, the clause can be deemed
 			 * UNSUPPORTED.  Even if its leftop matches some later partkey, we
 			 * now know it has Vars on the right, so it's no use.
 			 */
-			opno = get_commutator(opno);
+			opno = get_commutator(opno, &oprowner);
 			if (!OidIsValid(opno))
 				return PARTCLAUSE_UNSUPPORTED;
 			expr = leftop;
@@ -2005,12 +2007,14 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 		}
 		else
 		{
+			Oid			oprowner;
+
 			/* not supported for anything apart from LIST partitioned tables */
 			if (part_scheme->strategy != PARTITION_STRATEGY_LIST)
 				return PARTCLAUSE_UNSUPPORTED;
 
 			/* See if the negator is equality */
-			negator = get_negator(opno);
+			negator = get_negator(opno, &oprowner);
 			if (OidIsValid(negator) && op_in_opfamily(negator, partopfamily))
 			{
 				get_op_opfamily_properties(negator, partopfamily, false,
@@ -2218,11 +2222,12 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 		if (!op_in_opfamily(saop_op, partopfamily))
 		{
 			Oid			negator;
+			Oid			oprowner;
 
 			if (part_scheme->strategy != PARTITION_STRATEGY_LIST)
 				return PARTCLAUSE_NOMATCH;
 
-			negator = get_negator(saop_op);
+			negator = get_negator(saop_op, &oprowner);
 			if (OidIsValid(negator) && op_in_opfamily(negator, partopfamily))
 			{
 				int			strategy;

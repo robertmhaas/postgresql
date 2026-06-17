@@ -3941,7 +3941,7 @@ make_partition_op_expr(PartitionKey key, int keynum,
 					saopexpr->useOr = true;
 					saopexpr->inputcollid = key->partcollation[keynum];
 					saopexpr->args = list_make2(arg1, arrexpr);
-					saopexpr->pidx = 0;		/* PROVENANCE-TODO */
+					saopexpr->pidx = 0; /* PROVENANCE-TODO */
 					saopexpr->location = -1;
 
 					result = (Expr *) saopexpr;

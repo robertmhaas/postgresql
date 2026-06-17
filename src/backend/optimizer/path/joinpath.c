@@ -2204,6 +2204,7 @@ hash_inner_and_outer(PlannerInfo *root,
 	foreach(l, extra->restrictlist)
 	{
 		RestrictInfo *restrictinfo = (RestrictInfo *) lfirst(l);
+		Oid			oprowner;
 
 		/*
 		 * If processing an outer join, only use its own join clauses for
@@ -2234,7 +2235,8 @@ hash_inner_and_outer(PlannerInfo *root,
 		 * The clause being hashjoinable indicates that it's an OpExpr.
 		 */
 		if (!restrictinfo->outer_is_left &&
-			!OidIsValid(get_commutator(castNode(OpExpr, restrictinfo->clause)->opno)))
+			!OidIsValid(get_commutator(castNode(OpExpr, restrictinfo->clause)->opno,
+									   &oprowner)))
 			continue;
 
 		hashclauses = lappend(hashclauses, restrictinfo);
@@ -2435,6 +2437,7 @@ select_mergejoin_clauses(PlannerInfo *root,
 	foreach(l, restrictlist)
 	{
 		RestrictInfo *restrictinfo = (RestrictInfo *) lfirst(l);
+		Oid			oprowner;
 
 		/*
 		 * If processing an outer join, only use its own join clauses in the
@@ -2481,7 +2484,8 @@ select_mergejoin_clauses(PlannerInfo *root,
 		 * The clause being mergejoinable indicates that it's an OpExpr.
 		 */
 		if (!restrictinfo->outer_is_left &&
-			!OidIsValid(get_commutator(castNode(OpExpr, restrictinfo->clause)->opno)))
+			!OidIsValid(get_commutator(castNode(OpExpr, restrictinfo->clause)->opno,
+									   &oprowner)))
 		{
 			have_nonmergeable_joinclause = true;
 			continue;

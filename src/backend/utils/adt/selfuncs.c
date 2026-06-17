@@ -324,7 +324,9 @@ eqsel_internal(PG_FUNCTION_ARGS, bool negate)
 	 */
 	if (negate)
 	{
-		operator = get_negator(operator);
+		Oid			oprowner;
+
+		operator = get_negator(operator, &oprowner);
 		if (!OidIsValid(operator))
 		{
 			/* Use default selectivity (should we raise an error instead?) */
@@ -1518,7 +1520,9 @@ scalarineqsel_wrapper(PG_FUNCTION_ARGS, bool isgt, bool iseq)
 	 */
 	if (!varonleft)
 	{
-		operator = get_commutator(operator);
+		Oid			oprowner;
+
+		operator = get_commutator(operator, &oprowner);
 		if (!operator)
 		{
 			/* Use default selectivity (should we raise an error instead?) */
@@ -1944,9 +1948,11 @@ scalararraysel(PlannerInfo *root,
 	typentry = lookup_type_cache(nominal_element_type, TYPECACHE_EQ_OPR);
 	if (OidIsValid(typentry->eq_opr))
 	{
+		Oid			oprowner;
+
 		if (operator == typentry->eq_opr)
 			isEquality = true;
-		else if (get_negator(operator) == typentry->eq_opr)
+		else if (get_negator(operator, &oprowner) == typentry->eq_opr)
 			isInequality = true;
 	}
 
@@ -3230,7 +3236,8 @@ neqjoinsel(PG_FUNCTION_ARGS)
 		 * We want 1 - eqjoinsel() where the equality operator is the one
 		 * associated with this != operator, that is, its negator.
 		 */
-		Oid			eqop = get_negator(operator);
+		Oid			oprowner;
+		Oid			eqop = get_negator(operator, &oprowner);
 
 		if (eqop)
 		{

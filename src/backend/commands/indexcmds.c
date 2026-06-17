@@ -2171,6 +2171,7 @@ ComputeIndexAttrs(ParseState *pstate,
 			List	   *opname = (List *) lfirst(nextExclOp);
 			Oid			opid;
 			Oid			opfamily;
+			Oid			oprowner;
 			int			strat;
 
 			/*
@@ -2199,7 +2200,7 @@ ComputeIndexAttrs(ParseState *pstate,
 			 * constraints. If X conflicts with Y, but Y does not conflict
 			 * with X, bad things will happen.
 			 */
-			if (get_commutator(opid) != opid)
+			if (get_commutator(opid, &oprowner) != opid)
 				ereport(ERROR,
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						 errmsg("operator %s is not commutative",

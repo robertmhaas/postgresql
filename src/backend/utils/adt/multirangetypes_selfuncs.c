@@ -181,8 +181,10 @@ multirangesel(PG_FUNCTION_ARGS)
 	 */
 	if (!varonleft)
 	{
+		Oid			oprowner;
+
 		/* we have other Op var, commute to make var Op other */
-		operator = get_commutator(operator);
+		operator = get_commutator(operator, &oprowner);
 		if (!operator)
 		{
 			/* Use default selectivity (should we raise an error instead?) */

@@ -775,7 +775,8 @@ get_op_index_interpretation(Oid opno)
 	 */
 	if (result == NIL)
 	{
-		Oid			op_negator = get_negator(opno);
+		Oid			oprowner;
+		Oid			op_negator = get_negator(opno, &oprowner);
 
 		if (OidIsValid(op_negator))
 		{
@@ -1810,10 +1811,11 @@ op_volatile(Oid opno)
 /*
  * get_commutator
  *
- *		Returns the corresponding commutator of an operator.
+ *		Returns the corresponding commutator of an operator, and sets
+ *		*oprowner to the owner of the original operator.
  */
 Oid
-get_commutator(Oid opno)
+get_commutator(Oid opno, Oid *oprowner)
 {
 	HeapTuple	tp;
 
@@ -1824,20 +1826,25 @@ get_commutator(Oid opno)
 		Oid			result;
 
 		result = optup->oprcom;
+		*oprowner = optup->oprowner;
 		ReleaseSysCache(tp);
 		return result;
 	}
 	else
+	{
+		*oprowner = InvalidOid;
 		return InvalidOid;
+	}
 }
 
 /*
  * get_negator
  *
- *		Returns the corresponding negator of an operator.
+ *		Returns the corresponding negator of an operator, and sets
+ *		*oprowner to the owner of the original operator.
  */
 Oid
-get_negator(Oid opno)
+get_negator(Oid opno, Oid *oprowner)
 {
 	HeapTuple	tp;
 
@@ -1848,11 +1855,15 @@ get_negator(Oid opno)
 		Oid			result;
 
 		result = optup->oprnegate;
+		*oprowner = optup->oprowner;
 		ReleaseSysCache(tp);
 		return result;
 	}
 	else
+	{
+		*oprowner = InvalidOid;
 		return InvalidOid;
+	}
 }
 
 /*

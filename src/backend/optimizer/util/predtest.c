@@ -1788,6 +1788,7 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 	Oid			pred_op,
 				clause_op,
 				test_op;
+	Oid			oprowner;
 	Node	   *pred_leftop,
 			   *pred_rightop,
 			   *clause_leftop,
@@ -1869,10 +1870,10 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 			return false;
 		clause_const = (Const *) clause_leftop;
 		/* Commute both operators so we can assume Consts are on the right */
-		pred_op = get_commutator(pred_op);
+		pred_op = get_commutator(pred_op, &oprowner);
 		if (!OidIsValid(pred_op))
 			return false;
-		clause_op = get_commutator(clause_op);
+		clause_op = get_commutator(clause_op, &oprowner);
 		if (!OidIsValid(clause_op))
 			return false;
 	}
@@ -1882,7 +1883,7 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 		{
 			/* We have x op1 y and y op2 x */
 			/* Commute pred_op that we can treat this like a straight match */
-			pred_op = get_commutator(pred_op);
+			pred_op = get_commutator(pred_op, &oprowner);
 			if (!OidIsValid(pred_op))
 				return false;
 			return operator_same_subexprs_proof(pred_op, clause_op, refute_it);
@@ -1897,7 +1898,7 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 				return false;
 			clause_const = (Const *) clause_leftop;
 			/* Commute clause_op so we can assume Consts are on the right */
-			clause_op = get_commutator(clause_op);
+			clause_op = get_commutator(clause_op, &oprowner);
 			if (!OidIsValid(clause_op))
 				return false;
 		}
@@ -1912,7 +1913,7 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 			return false;
 		clause_const = (Const *) clause_rightop;
 		/* Commute pred_op so we can assume Consts are on the right */
-		pred_op = get_commutator(pred_op);
+		pred_op = get_commutator(pred_op, &oprowner);
 		if (!OidIsValid(pred_op))
 			return false;
 	}
@@ -2035,6 +2036,8 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 static bool
 operator_same_subexprs_proof(Oid pred_op, Oid clause_op, bool refute_it)
 {
+	Oid			oprowner;
+
 	/*
 	 * A simple and general rule is that the predicate is proven if clause_op
 	 * and pred_op are the same, or refuted if they are each other's negators.
@@ -2050,7 +2053,7 @@ operator_same_subexprs_proof(Oid pred_op, Oid clause_op, bool refute_it)
 	 */
 	if (refute_it)
 	{
-		if (get_negator(pred_op) == clause_op)
+		if (get_negator(pred_op, &oprowner) == clause_op)
 			return true;
 	}
 	else
@@ -2230,7 +2233,11 @@ lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
 														  clause_op_info->oprighttype,
 														  COMPARE_EQ);
 				if (OidIsValid(test_op))
-					test_op = get_negator(test_op);
+				{
+					Oid			oprowner;
+
+					test_op = get_negator(test_op, &oprowner);
+				}
 			}
 			else
 			{

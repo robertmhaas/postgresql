@@ -1371,7 +1371,9 @@ group_similar_or_args(PlannerInfo *root, RelOptInfo *rel, RestrictInfo *rinfo)
 			!bms_is_member(relid, argrinfo->left_relids) &&
 			!contain_volatile_functions(leftop))
 		{
-			opno = get_commutator(opno);
+			Oid			oprowner;
+
+			opno = get_commutator(opno, &oprowner);
 
 			if (!OidIsValid(opno))
 			{
@@ -3014,10 +3016,8 @@ match_opclause_to_indexcol(PlannerInfo *root,
 	{
 		if (IndexCollMatchesExprColl(idxcollation, expr_coll))
 		{
-			Oid			comm_op = get_commutator(expr_op);
-			Oid			comm_op_owner;
-
-			comm_op_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
+			Oid			oprowner;
+			Oid			comm_op = get_commutator(expr_op, &oprowner);
 
 			if (OidIsValid(comm_op) &&
 				op_in_opfamily(comm_op, opfamily))
@@ -3026,7 +3026,7 @@ match_opclause_to_indexcol(PlannerInfo *root,
 
 				/* Build a commuted OpExpr and RestrictInfo */
 				commrinfo = commute_restrictinfo(rinfo, comm_op,
-												 comm_op_owner,
+												 oprowner,
 												 root->glob->provenances);
 
 				/* Make an IndexClause showing that as a derived qual */
@@ -3298,8 +3298,10 @@ match_rowcompare_to_indexcol(PlannerInfo *root,
 			 !bms_is_member(index_relid, pull_varnos(root, leftop)) &&
 			 !contain_volatile_functions(leftop))
 	{
+		Oid			oprowner;
+
 		/* indexkey is on right, so commute the operator */
-		expr_op = get_commutator(expr_op);
+		expr_op = get_commutator(expr_op, &oprowner);
 		if (expr_op == InvalidOid)
 			return NULL;
 		var_on_left = false;
@@ -3408,7 +3410,9 @@ match_orclause_to_indexcol(PlannerInfo *root,
 				 !bms_is_member(indexRelid, subRinfo->left_relids) &&
 				 !contain_volatile_functions(leftop))
 		{
-			opno = get_commutator(opno);
+			Oid			oprowner;
+
+			opno = get_commutator(opno, &oprowner);
 			if (!OidIsValid(opno))
 			{
 				/* commutator doesn't exist, we can't reverse the order */
@@ -3600,8 +3604,10 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 		expr_op = list_nth_oid(clause->opnos, matching_cols);
 		if (!var_on_left)
 		{
+			Oid			oprowner;
+
 			/* indexkey is on right, so commute the operator */
-			expr_op = get_commutator(expr_op);
+			expr_op = get_commutator(expr_op, &oprowner);
 			if (expr_op == InvalidOid)
 				break;			/* operator is not usable */
 		}
@@ -3881,7 +3887,7 @@ match_clause_to_ordering_op(IndexOptInfo *index,
 	Node	   *leftop,
 			   *rightop;
 	Oid			expr_op;
-	Oid			expr_op_owner;
+	Oid			oprowner;
 	Oid			expr_coll;
 	Oid			sortfamily;
 	bool		commuted;
@@ -3924,8 +3930,7 @@ match_clause_to_ordering_op(IndexOptInfo *index,
 			 !contain_volatile_functions(leftop))
 	{
 		/* Might match, but we need a commuted operator */
-		expr_op = get_commutator(expr_op);
-		expr_op_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
+		expr_op = get_commutator(expr_op, &oprowner);
 		if (expr_op == InvalidOid)
 			return NULL;
 		commuted = true;
@@ -3955,7 +3960,7 @@ match_clause_to_ordering_op(IndexOptInfo *index,
 		newclause->args = list_make2(rightop, leftop);
 		newclause->pidx = ProvenanceForOperator(provenances,
 												expr_op,
-												expr_op_owner,
+												oprowner,
 												((OpExpr *) clause)->pidx);
 
 		clause = (Expr *) newclause;

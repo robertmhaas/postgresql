@@ -94,14 +94,13 @@ negate_clause(Node *node, Provenances *provenances)
 				 * Negate operator if possible: (NOT (< A B)) => (>= A B)
 				 */
 				OpExpr	   *opexpr = (OpExpr *) node;
-				Oid			negator = get_negator(opexpr->opno);
+				Oid			oprowner;
+				Oid			negator = get_negator(opexpr->opno, &oprowner);
 
 				if (negator)
 				{
 					OpExpr	   *newopexpr = makeNode(OpExpr);
-					Oid			negator_owner;
 
-					negator_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
 					newopexpr->opno = negator;
 					newopexpr->opfuncid = InvalidOid;
 					newopexpr->opresulttype = opexpr->opresulttype;
@@ -112,7 +111,7 @@ negate_clause(Node *node, Provenances *provenances)
 					newopexpr->location = opexpr->location;
 					newopexpr->pidx = ProvenanceForOperator(provenances,
 															negator,
-															negator_owner,
+															oprowner,
 															opexpr->pidx);
 					return (Node *) newopexpr;
 				}
@@ -125,14 +124,13 @@ negate_clause(Node *node, Provenances *provenances)
 				 * for example x = ANY (list) becomes x <> ALL (list)
 				 */
 				ScalarArrayOpExpr *saopexpr = (ScalarArrayOpExpr *) node;
-				Oid			negator = get_negator(saopexpr->opno);
+				Oid			oprowner;
+				Oid			negator = get_negator(saopexpr->opno, &oprowner);
 
 				if (negator)
 				{
 					ScalarArrayOpExpr *newopexpr = makeNode(ScalarArrayOpExpr);
-					Oid			negator_owner;
 
-					negator_owner = BOOTSTRAP_SUPERUSERID;	/* PROVENANCE-TODO */
 					newopexpr->opno = negator;
 					newopexpr->opfuncid = InvalidOid;
 					newopexpr->hashfuncid = InvalidOid;
@@ -143,7 +141,7 @@ negate_clause(Node *node, Provenances *provenances)
 					newopexpr->location = saopexpr->location;
 					newopexpr->pidx = ProvenanceForOperator(provenances,
 															negator,
-															negator_owner,
+															oprowner,
 															saopexpr->pidx);
 					return (Node *) newopexpr;
 				}

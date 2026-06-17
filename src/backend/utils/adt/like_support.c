@@ -790,7 +790,9 @@ patternsel(PG_FUNCTION_ARGS, Pattern_Type ptype, bool negate)
 	 */
 	if (negate)
 	{
-		operator = get_negator(operator);
+		Oid			oprowner;
+
+		operator = get_negator(operator, &oprowner);
 		if (!OidIsValid(operator))
 			elog(ERROR, "patternsel called for operator without a negator");
 	}
