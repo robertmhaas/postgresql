@@ -3347,6 +3347,8 @@ match_orclause_to_indexcol(PlannerInfo *root,
 	List	   *consts = NIL;
 	Node	   *indexExpr = NULL;
 	Oid			matchOpno = InvalidOid;
+	ProvenanceIndex	base_pidx = -1;
+	ProvenanceIndex	commuted_pidx = -1;
 	Oid			consttype = InvalidOid;
 	Oid			arraytype = InvalidOid;
 	Oid			inputcollid = InvalidOid;
@@ -3364,9 +3366,9 @@ match_orclause_to_indexcol(PlannerInfo *root,
 	/*
 	 * Try to convert a list of OR-clauses to a single SAOP expression. Each
 	 * OR entry must be in the form: (indexkey operator constant) or (constant
-	 * operator indexkey).  Operators of all the entries must match.  On
-	 * discovery of anything unsupported, we give up by breaking out of the
-	 * loop immediately and returning NULL.
+	 * operator indexkey).  Operators and provenances of all the entries must
+	 * match.  On discovery of anything unsupported, we give up by breaking out
+	 * of the loop immediately and returning NULL.
 	 */
 	foreach(lc, orclause->args)
 	{
@@ -3376,6 +3378,7 @@ match_orclause_to_indexcol(PlannerInfo *root,
 		Node	   *leftop,
 				   *rightop;
 		Node	   *constExpr;
+		ProvenanceIndex	pidx;
 
 		/* If it's not a RestrictInfo (i.e. it's a sub-AND), we can't use it */
 		if (!IsA(subRinfo, RestrictInfo))
@@ -3387,6 +3390,7 @@ match_orclause_to_indexcol(PlannerInfo *root,
 
 		subClause = (OpExpr *) subRinfo->clause;
 		opno = subClause->opno;
+		pidx = subClause->pidx;
 
 		/* Only binary operators can match */
 		if (list_length(subClause->args) != 2)
@@ -3401,10 +3405,12 @@ match_orclause_to_indexcol(PlannerInfo *root,
 		rightop = (Node *) lsecond(subClause->args);
 		if (match_index_to_operand(leftop, indexcol, index) &&
 			!bms_is_member(indexRelid, subRinfo->right_relids) &&
-			!contain_volatile_functions(rightop))
+			!contain_volatile_functions(rightop) &&
+			(base_pidx == -1 || base_pidx == pidx))
 		{
 			indexExpr = leftop;
 			constExpr = rightop;
+			base_pidx = pidx;
 		}
 		else if (match_index_to_operand(rightop, indexcol, index) &&
 				 !bms_is_member(indexRelid, subRinfo->left_relids) &&
@@ -3418,6 +3424,27 @@ match_orclause_to_indexcol(PlannerInfo *root,
 				/* commutator doesn't exist, we can't reverse the order */
 				break;
 			}
+
+			/*
+			 * If the base provenance index doesn't match, then we shouldn't
+			 * merge these two sub-clauses, as we wouldn't know what provenance
+			 * index to use for the result.
+			 */
+			if (base_pidx == -1)
+				base_pidx = pidx;
+			else if (base_pidx != pidx)
+				break;
+
+			/*
+			 * If we haven't yet computed the provenance index for commuted
+			 * clauses, do that now, since this clause is commuted.
+			 */
+			if (commuted_pidx == -1)
+				commuted_pidx = ProvenanceForOperator(root->glob->provenances,
+													  opno,
+													  oprowner,
+													  base_pidx);
+
 			indexExpr = rightop;
 			constExpr = leftop;
 		}
@@ -3496,9 +3523,30 @@ match_orclause_to_indexcol(PlannerInfo *root,
 	 * collation despite its elements being of a noncollatable type.  But
 	 * nothing is likely to complain about that, so we don't bother being more
 	 * accurate.
+	 *
+	 * If the commutator was never used, then use the provenance history for
+	 * the un-commuted version of the operator, which must be common to every
+	 * branch of the ScalarArrayOpExpr. If it was used at least once, use the
+	 * commuted version of the provenance history for all branches of the
+	 * ScalarArrayOpExpr. This shouldn't be incorrect in any way that matters:
+	 * the commutator-extended history is correct for at least one RHS value,
+	 * and it includes the history that should be used for any non-commuted
+	 * subclauses as well.
+	 *
+	 * It would be nice to do better here. For example, we could add logic to
+	 * allow merging of clauses where all provenance histories are fully
+	 * trusted by picking any one of them. Even though that hisory would be
+	 * "wrong" for the other branches of the ScalarArrayOpExpr, it wouldn't
+	 * cause any problem in practice. But even if we did that, we might still
+	 * fail to optimize some cases that would benefit from a ScalarArrayOpExpr
+	 * transformation. That seems unavoidable unless we allow a Provenances
+	 * object to represent a branching history, or a ScalarArrayOpExpr to
+	 * store multiple provenance indexes, and either of those things seems
+	 * pretty complicated.
 	 */
 	saopexpr = make_SAOP_expr(matchOpno, indexExpr, consttype, inputcollid,
 							  inputcollid, consts, haveNonConst);
+	saopexpr->pidx = commuted_pidx == -1 ? base_pidx : commuted_pidx;
 	Assert(saopexpr != NULL);
 
 	/*

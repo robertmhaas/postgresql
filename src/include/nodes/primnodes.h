@@ -958,7 +958,6 @@ typedef struct ScalarArrayOpExpr
 	List	   *args;
 
 	/* provenance index for this expression node */
-	/* PROVENANCE-TODO: make this an array, for match_orclause_to_indexcol */
 	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 
 	/* token location, or -1 if unknown */
