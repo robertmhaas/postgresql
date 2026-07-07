@@ -188,6 +188,7 @@ static IndexClause *expand_indexqual_rowcompare(PlannerInfo *root,
 												int indexcol,
 												IndexOptInfo *index,
 												Oid expr_op,
+												ProvenanceIndex pidx,
 												bool var_on_left);
 static void match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 									List **orderby_clauses_p,
@@ -3256,6 +3257,7 @@ match_rowcompare_to_indexcol(PlannerInfo *root,
 	bool		var_on_left;
 	Oid			expr_op;
 	Oid			expr_coll;
+	ProvenanceIndex pidx;
 
 	/* Forget it if we're not dealing with a btree index */
 	if (index->relam != BTREE_AM_OID)
@@ -3279,6 +3281,7 @@ match_rowcompare_to_indexcol(PlannerInfo *root,
 	rightop = (Node *) linitial(clause->rargs);
 	expr_op = linitial_oid(clause->opnos);
 	expr_coll = linitial_oid(clause->inputcollids);
+	pidx = linitial_int(clause->pidxlist);
 
 	/* Collations must match, if relevant */
 	if (!IndexCollMatchesExprColl(idxcollation, expr_coll))
@@ -3299,11 +3302,16 @@ match_rowcompare_to_indexcol(PlannerInfo *root,
 			 !contain_volatile_functions(leftop))
 	{
 		Oid			oprowner;
+		Oid			commuted_op = expr_op;
 
 		/* indexkey is on right, so commute the operator */
 		expr_op = get_commutator(expr_op, &oprowner);
 		if (expr_op == InvalidOid)
 			return NULL;
+		pidx = ProvenanceForOperator(root->glob->provenances,
+									 commuted_op,
+									 oprowner,
+									 pidx);
 		var_on_left = false;
 	}
 	else
@@ -3321,6 +3329,7 @@ match_rowcompare_to_indexcol(PlannerInfo *root,
 											   indexcol,
 											   index,
 											   expr_op,
+											   pidx,
 											   var_on_left);
 	}
 
@@ -3347,8 +3356,8 @@ match_orclause_to_indexcol(PlannerInfo *root,
 	List	   *consts = NIL;
 	Node	   *indexExpr = NULL;
 	Oid			matchOpno = InvalidOid;
-	ProvenanceIndex	base_pidx = -1;
-	ProvenanceIndex	commuted_pidx = -1;
+	ProvenanceIndex base_pidx = -1;
+	ProvenanceIndex commuted_pidx = -1;
 	Oid			consttype = InvalidOid;
 	Oid			arraytype = InvalidOid;
 	Oid			inputcollid = InvalidOid;
@@ -3367,8 +3376,8 @@ match_orclause_to_indexcol(PlannerInfo *root,
 	 * Try to convert a list of OR-clauses to a single SAOP expression. Each
 	 * OR entry must be in the form: (indexkey operator constant) or (constant
 	 * operator indexkey).  Operators and provenances of all the entries must
-	 * match.  On discovery of anything unsupported, we give up by breaking out
-	 * of the loop immediately and returning NULL.
+	 * match.  On discovery of anything unsupported, we give up by breaking
+	 * out of the loop immediately and returning NULL.
 	 */
 	foreach(lc, orclause->args)
 	{
@@ -3378,7 +3387,7 @@ match_orclause_to_indexcol(PlannerInfo *root,
 		Node	   *leftop,
 				   *rightop;
 		Node	   *constExpr;
-		ProvenanceIndex	pidx;
+		ProvenanceIndex pidx;
 
 		/* If it's not a RestrictInfo (i.e. it's a sub-AND), we can't use it */
 		if (!IsA(subRinfo, RestrictInfo))
@@ -3427,8 +3436,8 @@ match_orclause_to_indexcol(PlannerInfo *root,
 
 			/*
 			 * If the base provenance index doesn't match, then we shouldn't
-			 * merge these two sub-clauses, as we wouldn't know what provenance
-			 * index to use for the result.
+			 * merge these two sub-clauses, as we wouldn't know what
+			 * provenance index to use for the result.
 			 */
 			if (base_pidx == -1)
 				base_pidx = pidx;
@@ -3591,6 +3600,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 							int indexcol,
 							IndexOptInfo *index,
 							Oid expr_op,
+							ProvenanceIndex pidx,
 							bool var_on_left)
 {
 	IndexClause *iclause = makeNode(IndexClause);
@@ -3603,7 +3613,9 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 	List	   *opfamilies;
 	List	   *lefttypes;
 	List	   *righttypes;
+	List	   *pidxlist;
 	List	   *new_ops;
+	List	   *new_pidxlist;
 	List	   *var_args;
 	List	   *non_var_args;
 
@@ -3634,6 +3646,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 	opfamilies = list_make1_oid(index->opfamily[indexcol]);
 	lefttypes = list_make1_oid(op_lefttype);
 	righttypes = list_make1_oid(op_righttype);
+	pidxlist = list_make1_int(pidx);
 
 	/*
 	 * See how many of the remaining columns match some index column in the
@@ -3647,17 +3660,23 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 	{
 		Node	   *varop = (Node *) list_nth(var_args, matching_cols);
 		Node	   *constop = (Node *) list_nth(non_var_args, matching_cols);
+		ProvenanceIndex match_pidx = list_nth_int(clause->pidxlist, matching_cols);
 		int			i;
 
 		expr_op = list_nth_oid(clause->opnos, matching_cols);
 		if (!var_on_left)
 		{
+			Oid			commuted_op = expr_op;
 			Oid			oprowner;
 
 			/* indexkey is on right, so commute the operator */
 			expr_op = get_commutator(expr_op, &oprowner);
 			if (expr_op == InvalidOid)
 				break;			/* operator is not usable */
+			match_pidx = ProvenanceForOperator(root->glob->provenances,
+											   commuted_op,
+											   oprowner,
+											   match_pidx);
 		}
 		if (bms_is_member(index->rel->relid, pull_varnos(root, constop)))
 			break;				/* no good, Var on wrong side */
@@ -3692,6 +3711,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 		opfamilies = lappend_oid(opfamilies, index->opfamily[i]);
 		lefttypes = lappend_oid(lefttypes, op_lefttype);
 		righttypes = lappend_oid(righttypes, op_righttype);
+		pidxlist = lappend_int(pidxlist, match_pidx);
 
 		/* This column matches, keep scanning */
 		matching_cols++;
@@ -3717,18 +3737,23 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 		{
 			/* very easy, just use the commuted operators */
 			new_ops = expr_ops;
+			/* and their provenances */
+			new_pidxlist = pidxlist;
 		}
 		else if (op_strategy == BTLessEqualStrategyNumber ||
 				 op_strategy == BTGreaterEqualStrategyNumber)
 		{
 			/* easy, just use the same (possibly commuted) operators */
 			new_ops = list_truncate(expr_ops, matching_cols);
+			/* and truncate provenances correspondingly */
+			new_pidxlist = list_truncate(pidxlist, matching_cols);
 		}
 		else
 		{
 			ListCell   *opfamilies_cell;
 			ListCell   *lefttypes_cell;
 			ListCell   *righttypes_cell;
+			ListCell   *pidxlist_cell;
 
 			if (op_strategy == BTLessStrategyNumber)
 				op_strategy = BTLessEqualStrategyNumber;
@@ -3737,13 +3762,16 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 			else
 				elog(ERROR, "unexpected strategy number %d", op_strategy);
 			new_ops = NIL;
-			forthree(opfamilies_cell, opfamilies,
-					 lefttypes_cell, lefttypes,
-					 righttypes_cell, righttypes)
+			new_pidxlist = NIL;
+			forfour(opfamilies_cell, opfamilies,
+					lefttypes_cell, lefttypes,
+					righttypes_cell, righttypes,
+					pidxlist_cell, pidxlist)
 			{
 				Oid			opfam = lfirst_oid(opfamilies_cell);
 				Oid			lefttype = lfirst_oid(lefttypes_cell);
 				Oid			righttype = lfirst_oid(righttypes_cell);
+				ProvenanceIndex op_pidx = lfirst_int(pidxlist_cell);
 
 				expr_op = get_opfamily_member(opfam, lefttype, righttype,
 											  op_strategy);
@@ -3751,6 +3779,12 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 					elog(ERROR, "missing operator %d(%u,%u) in opfamily %u",
 						 op_strategy, lefttype, righttype, opfam);
 				new_ops = lappend_oid(new_ops, expr_op);
+				op_pidx = ProvenanceForOpfamily(root->glob->provenances,
+												opfam,
+												BOOTSTRAP_SUPERUSERID,	/* PROVENANCE-TODO:
+																		 * FIXME */
+												op_pidx);
+				new_pidxlist = lappend_int(new_pidxlist, op_pidx);
 			}
 		}
 
@@ -3767,6 +3801,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 											  matching_cols);
 			rc->largs = list_copy_head(var_args, matching_cols);
 			rc->rargs = list_copy_head(non_var_args, matching_cols);
+			rc->pidxlist = list_copy_head(new_pidxlist, matching_cols);
 			iclause->indexquals = list_make1(make_simple_restrictinfo(root,
 																	  (Expr *) rc));
 		}
@@ -3782,7 +3817,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 							   copyObject(linitial(non_var_args)),
 							   InvalidOid,
 							   linitial_oid(clause->inputcollids),
-							   0);	/* PROVENANCE-TODO */
+							   linitial_int(new_pidxlist));
 			iclause->indexquals = list_make1(make_simple_restrictinfo(root, op));
 		}
 	}
