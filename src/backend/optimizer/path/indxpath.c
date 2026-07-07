@@ -3535,7 +3535,7 @@ match_orclause_to_indexcol(PlannerInfo *root,
 	 *
 	 * It would be nice to do better here. For example, we could add logic to
 	 * allow merging of clauses where all provenance histories are fully
-	 * trusted by picking any one of them. Even though that hisory would be
+	 * trusted by picking any one of them. Even though that history would be
 	 * "wrong" for the other branches of the ScalarArrayOpExpr, it wouldn't
 	 * cause any problem in practice. But even if we did that, we might still
 	 * fail to optimize some cases that would benefit from a ScalarArrayOpExpr
