@@ -3281,7 +3281,7 @@ match_rowcompare_to_indexcol(PlannerInfo *root,
 	rightop = (Node *) linitial(clause->rargs);
 	expr_op = linitial_oid(clause->opnos);
 	expr_coll = linitial_oid(clause->inputcollids);
-	pidx = linitial_int(clause->pidxlist);
+	pidx = clause->pidxarr[0];
 
 	/* Collations must match, if relevant */
 	if (!IndexCollMatchesExprColl(idxcollation, expr_coll))
@@ -3613,9 +3613,8 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 	List	   *opfamilies;
 	List	   *lefttypes;
 	List	   *righttypes;
-	List	   *pidxlist;
+	ProvenanceIndex *pidxarr;
 	List	   *new_ops;
-	List	   *new_pidxlist;
 	List	   *var_args;
 	List	   *non_var_args;
 
@@ -3646,7 +3645,8 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 	opfamilies = list_make1_oid(index->opfamily[indexcol]);
 	lefttypes = list_make1_oid(op_lefttype);
 	righttypes = list_make1_oid(op_righttype);
-	pidxlist = list_make1_int(pidx);
+	pidxarr = palloc_array(ProvenanceIndex, list_length(var_args));
+	pidxarr[0] = pidx;
 
 	/*
 	 * See how many of the remaining columns match some index column in the
@@ -3660,7 +3660,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 	{
 		Node	   *varop = (Node *) list_nth(var_args, matching_cols);
 		Node	   *constop = (Node *) list_nth(non_var_args, matching_cols);
-		ProvenanceIndex match_pidx = list_nth_int(clause->pidxlist, matching_cols);
+		ProvenanceIndex match_pidx = clause->pidxarr[matching_cols];
 		int			i;
 
 		expr_op = list_nth_oid(clause->opnos, matching_cols);
@@ -3711,7 +3711,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 		opfamilies = lappend_oid(opfamilies, index->opfamily[i]);
 		lefttypes = lappend_oid(lefttypes, op_lefttype);
 		righttypes = lappend_oid(righttypes, op_righttype);
-		pidxlist = lappend_int(pidxlist, match_pidx);
+		pidxarr[matching_cols] = match_pidx;
 
 		/* This column matches, keep scanning */
 		matching_cols++;
@@ -3737,23 +3737,18 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 		{
 			/* very easy, just use the commuted operators */
 			new_ops = expr_ops;
-			/* and their provenances */
-			new_pidxlist = pidxlist;
 		}
 		else if (op_strategy == BTLessEqualStrategyNumber ||
 				 op_strategy == BTGreaterEqualStrategyNumber)
 		{
 			/* easy, just use the same (possibly commuted) operators */
 			new_ops = list_truncate(expr_ops, matching_cols);
-			/* and truncate provenances correspondingly */
-			new_pidxlist = list_truncate(pidxlist, matching_cols);
 		}
 		else
 		{
 			ListCell   *opfamilies_cell;
 			ListCell   *lefttypes_cell;
 			ListCell   *righttypes_cell;
-			ListCell   *pidxlist_cell;
 
 			if (op_strategy == BTLessStrategyNumber)
 				op_strategy = BTLessEqualStrategyNumber;
@@ -3762,16 +3757,14 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 			else
 				elog(ERROR, "unexpected strategy number %d", op_strategy);
 			new_ops = NIL;
-			new_pidxlist = NIL;
-			forfour(opfamilies_cell, opfamilies,
-					lefttypes_cell, lefttypes,
-					righttypes_cell, righttypes,
-					pidxlist_cell, pidxlist)
+			forthree(opfamilies_cell, opfamilies,
+					 lefttypes_cell, lefttypes,
+					 righttypes_cell, righttypes)
 			{
+				int			n = foreach_current_index(opfamilies_cell);
 				Oid			opfam = lfirst_oid(opfamilies_cell);
 				Oid			lefttype = lfirst_oid(lefttypes_cell);
 				Oid			righttype = lfirst_oid(righttypes_cell);
-				ProvenanceIndex op_pidx = lfirst_int(pidxlist_cell);
 
 				expr_op = get_opfamily_member(opfam, lefttype, righttype,
 											  op_strategy);
@@ -3779,12 +3772,11 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 					elog(ERROR, "missing operator %d(%u,%u) in opfamily %u",
 						 op_strategy, lefttype, righttype, opfam);
 				new_ops = lappend_oid(new_ops, expr_op);
-				op_pidx = ProvenanceForOpfamily(root->glob->provenances,
-												opfam,
-												BOOTSTRAP_SUPERUSERID,	/* PROVENANCE-TODO:
-																		 * FIXME */
-												op_pidx);
-				new_pidxlist = lappend_int(new_pidxlist, op_pidx);
+				pidxarr[n] = ProvenanceForOpfamily(root->glob->provenances,
+												   opfam,
+												   BOOTSTRAP_SUPERUSERID,	/* PROVENANCE-TODO:
+																			 * FIXME */
+												   pidxarr[n]);
 			}
 		}
 
@@ -3801,7 +3793,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 											  matching_cols);
 			rc->largs = list_copy_head(var_args, matching_cols);
 			rc->rargs = list_copy_head(non_var_args, matching_cols);
-			rc->pidxlist = list_copy_head(new_pidxlist, matching_cols);
+			rc->pidxarr = pidxarr;
 			iclause->indexquals = list_make1(make_simple_restrictinfo(root,
 																	  (Expr *) rc));
 		}
@@ -3817,7 +3809,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 							   copyObject(linitial(non_var_args)),
 							   InvalidOid,
 							   linitial_oid(clause->inputcollids),
-							   linitial_int(new_pidxlist));
+							   pidxarr[0]);
 			iclause->indexquals = list_make1(make_simple_restrictinfo(root, op));
 		}
 	}

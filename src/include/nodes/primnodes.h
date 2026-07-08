@@ -1517,8 +1517,8 @@ typedef struct RowCompareExpr
 	List	   *largs;
 	/* the right-hand input arguments */
 	List	   *rargs;
-	/* list of provenance indexes for this expression node */
-	List	   *pidxlist pg_node_attr(equal_ignore, query_jumble_ignore);
+	/* array of provenance indexes for this expression node */
+	ProvenanceIndex *pidxarr pg_node_attr(equal_ignore, query_jumble_ignore, array_size(opnos));
 } RowCompareExpr;
 
 /*

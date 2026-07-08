@@ -2868,7 +2868,6 @@ make_row_comparison_op(ParseState *pstate, List *opname,
 	ListCell   *l,
 			   *r;
 	List	  **opinfo_lists;
-	List	   *pidxlist = NIL;
 	Bitmapset  *cmptypes;
 	int			nopers;
 	int			i;
@@ -3041,7 +3040,6 @@ make_row_comparison_op(ParseState *pstate, List *opname,
 		opnos = lappend_oid(opnos, cmp->opno);
 		largs = lappend(largs, linitial(cmp->args));
 		rargs = lappend(rargs, lsecond(cmp->args));
-		pidxlist = lappend_int(pidxlist, 0);	/* direct parser input */
 	}
 
 	rcexpr = makeNode(RowCompareExpr);
@@ -3051,7 +3049,9 @@ make_row_comparison_op(ParseState *pstate, List *opname,
 	rcexpr->inputcollids = NIL; /* assign_expr_collations will fix this */
 	rcexpr->largs = largs;
 	rcexpr->rargs = rargs;
-	rcexpr->pidxlist = pidxlist;
+
+	/* direct parser input */
+	rcexpr->pidxarr = palloc0_array(ProvenanceIndex, nopers);
 
 	return (Node *) rcexpr;
 }

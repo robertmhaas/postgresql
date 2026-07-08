@@ -119,6 +119,11 @@ static void outDouble(StringInfo str, double d);
 	(appendStringInfoString(str, " :" CppAsString(fldname) " "), \
 	 writeAttrNumberCols(str, node->fldname, len))
 
+/* Write a variable-length array of ProvenanceIndex */
+#define WRITE_PROVENANCEINDEX_ARRAY(fldname, len) \
+	(appendStringInfoString(str, " :" CppAsString(fldname) " "), \
+	 writeIntCols(str, node->fldname, len))
+
 /* Write a variable-length array of Oid */
 #define WRITE_OID_ARRAY(fldname, len) \
 	(appendStringInfoString(str, " :" CppAsString(fldname) " "), \

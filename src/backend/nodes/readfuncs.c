@@ -163,6 +163,17 @@
 	token = pg_strtok(&length);		/* skip :fldname */ \
 	local_node->fldname = readAttrNumberCols(len)
 
+/* Read an provenance index array */
+#define READ_PROVENANCEINDEX_ARRAY(fldname, len) \
+	token = pg_strtok(&length);		/* skip :fldname */ \
+	local_node->fldname = readIntCols(len); \
+	if (provenance_index_override >= 0 || \
+		provenance_index_override == PI_NEVER_EXECUTED) \
+	{ \
+		for (int i = 0; i < len; ++i) \
+			local_node->fldname[i] = provenance_index_override; \
+	}
+
 /* Read an oid array */
 #define READ_OID_ARRAY(fldname, len) \
 	token = pg_strtok(&length);		/* skip :fldname */ \
