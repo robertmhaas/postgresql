@@ -64,6 +64,15 @@ some sort of cache, but it looks like that cache is for a particular
 PLpgSQL_execstate, so maybe we ought to be chaining off of the execstate's
 provenances.
 
+It appears that we will eventually need a ProvenanceIndex on every RTE.
+This can serve a few purposes. For example, if a trigger is fired on some
+table, we would naturally want to blame the decision to fire the trigger on
+whoever introduced that table into the query. If RTEs don't have provenance,
+it seems we can only blame the trigger firing on the query itself, which may
+not be accurate. Likewise, fireRIRrules would like to chain provenances from
+whatever introduced the view into the query, rather than on the query
+itself, and right now it cannot.
+
 The long-term goal is to make use of the Provenance data to guard against
 attempts by lower-privileged or differently-privileged accounts to
 abuse the privileges of other users via indirect calls that the
