@@ -50,28 +50,6 @@ subsequent catalog lookup to blame for the fact that we're calling that
 function; the selection of hash partitioning as a strategy is the whole
 story.
 
-RowCompareExpr is a case that needs more thought. If the user writes
-(a,b) < (c,d), make_row_comparison_op grovels around in the opfamilies and
-chooses operators to implement a<c and b<d. We could blame the call to
-the selected operator on the selected opfamily and that on the provenance
-of the RowCompareExpr itself, and all of those details are recorded in the
-RowCompareExpr. But match_rowcompare_to_indexcol may extend that chain by
-looking up the commutator operator for each column, consulting some possibly
-different opfamily which may vary from column to column, and then finding
-a new operator there. But none of those hops are recorded in the
-RowCompareExpr itself, so after this transformation, it's no longer possible
-to reconstruct a full provenance chain. There's a secondary problem, too, even
-without match_rowcompare_to_indexcol: while we record the opfamily OIDs and
-operator OIDs, we do not record the corresponding owners, so we don't
-directly have enough information to use ProvenanceForOperator, etc. at
-runtime.
-
-evaluate_function is another interesting case. It builds a FuncExpr which
-should get a proper provenance index, probably the same one as the original
-FuncExpr. But it doesn't have the original FuncExpr:
-eval_const_expressions_mutator just passes down specific fields to
-simply_function which in turn calls evaluate_function.
-
 Previously, it seemed as though operator_predicate_proof() didn't need
 Provenances passed down, but it builds and evaluates an OpExpr, so it does.
 
