@@ -476,7 +476,8 @@ expand_insert_targetlist(PlannerInfo *root, List *tlist, Relation rel)
 												 att_tup->atttypmod,
 												 att_tup->attcollation,
 												 att_tup->attlen,
-												 att_tup->attbyval);
+												 att_tup->attbyval,
+												 root->glob->provenances);
 				/* Must run expression preprocessing on any non-const nodes */
 				if (!IsA(new_expr, Const))
 					new_expr = eval_const_expressions(root, new_expr,

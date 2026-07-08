@@ -48,7 +48,8 @@ extern bool can_coerce_type(int nargs, const Oid *input_typeids, const Oid *targ
 extern Node *coerce_type(ParseState *pstate, Node *node,
 						 Oid inputTypeId, Oid targetTypeId, int32 targetTypeMod,
 						 CoercionContext ccontext, CoercionForm cformat, int location);
-extern Node *coerce_to_domain(Node *arg, Oid baseTypeId, int32 baseTypeMod,
+extern Node *coerce_to_domain(ParseState *pstate, Node *arg,
+							  Oid baseTypeId, int32 baseTypeMod,
 							  Oid typeId,
 							  CoercionContext ccontext, CoercionForm cformat, int location,
 							  bool hideInputCoercion);
@@ -64,7 +65,8 @@ extern Node *coerce_to_specific_type_typmod(ParseState *pstate, Node *node,
 											const char *constructName);
 
 extern Node *coerce_null_to_domain(Oid typid, int32 typmod, Oid collation,
-								   int typlen, bool typbyval);
+								   int typlen, bool typbyval,
+								   Provenances *provenances);
 
 extern int	parser_coercion_errposition(ParseState *pstate,
 										int coerce_location,

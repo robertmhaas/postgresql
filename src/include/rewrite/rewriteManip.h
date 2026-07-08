@@ -109,7 +109,8 @@ extern Node *ReplaceVarFromTargetList(const Var *var,
 									  List *targetlist,
 									  int result_relation,
 									  ReplaceVarsNoMatchOption nomatch_option,
-									  int nomatch_varno);
+									  int nomatch_varno,
+									  Provenances *provenances);
 extern Node *ReplaceVarsFromTargetList(Node *node,
 									   int target_varno, int sublevels_up,
 									   RangeTblEntry *target_rte,
@@ -117,6 +118,7 @@ extern Node *ReplaceVarsFromTargetList(Node *node,
 									   int result_relation,
 									   ReplaceVarsNoMatchOption nomatch_option,
 									   int nomatch_varno,
-									   bool *outer_hasSubLinks);
+									   bool *outer_hasSubLinks,
+									   Provenances *provenances);
 
 #endif							/* REWRITEMANIP_H */

@@ -8053,6 +8053,19 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 	LocalTransactionId curlxid;
 	MemoryContext oldcontext;
 
+	/*
+	 * PROVENANCE-TODO: cast_expr_hash is a session-lifetime cache, which
+	 * holds Expr trees, and estate->cast_hash stores the corresponding
+	 * ExprState trees for a particular estate. But provenances are stored in
+	 * the estate. We can use InitProvenancesForCache() to set up a
+	 * provenance chain for the cache entries, but at execution time, we
+	 * need to use the full provenance chain back to the session, which
+	 * appears to mean translating the tree to new provenance indexes,
+	 * which flies in the face of this code's goal of sharing the
+	 * same Expr tree across multiple ExprState trees. I don't know how to
+	 * sort this out yet...
+	 */
+
 	/* Look for existing entry */
 	cast_key.srctype = srctype;
 	cast_key.dsttype = dsttype;
@@ -8092,6 +8105,7 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 		Node	   *cast_expr;
 		CachedExpression *cast_cexpr;
 		CaseTestExpr *placeholder;
+		ParseState *pstate;
 
 		/*
 		 * Drop old cached expression if there is one.
@@ -8101,6 +8115,15 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 			FreeCachedExpression(expr_entry->cast_cexpr);
 			expr_entry->cast_cexpr = NULL;
 		}
+
+		/*
+		 * dummy parse state to carry provenances
+		 *
+		 * PROVENANCE-TODO: I don't think this is the right thing to pass;
+		 * see the comment at the top of this function.
+		 */
+		pstate = make_parsestate(NULL);
+		pstate->p_provenances = estate->provenances;
 
 		/*
 		 * Since we could easily fail (no such coercion), construct a
@@ -8136,7 +8159,7 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 		if (srctype == UNKNOWNOID || srctype == RECORDOID)
 			cast_expr = NULL;
 		else
-			cast_expr = coerce_to_target_type(NULL,
+			cast_expr = coerce_to_target_type(pstate,
 											  (Node *) placeholder, srctype,
 											  dsttype, dsttypmod,
 											  COERCION_PLPGSQL,
@@ -8161,7 +8184,7 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 			iocoerce->location = -1;
 			cast_expr = (Node *) iocoerce;
 			if (dsttypmod != -1)
-				cast_expr = coerce_to_target_type(NULL,
+				cast_expr = coerce_to_target_type(pstate,
 												  cast_expr, dsttype,
 												  dsttype, dsttypmod,
 												  COERCION_ASSIGNMENT,

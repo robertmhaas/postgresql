@@ -1758,6 +1758,7 @@ typedef struct
 	int			result_relation;
 	ReplaceVarsNoMatchOption nomatch_option;
 	int			nomatch_varno;
+	Provenances *provenances;
 } ReplaceVarsFromTargetList_context;
 
 static Node *
@@ -1772,7 +1773,8 @@ ReplaceVarsFromTargetList_callback(const Var *var,
 									   rcon->targetlist,
 									   rcon->result_relation,
 									   rcon->nomatch_option,
-									   rcon->nomatch_varno);
+									   rcon->nomatch_varno,
+									   rcon->provenances);
 
 	/* Must adjust varlevelsup if replaced Var is within a subquery */
 	if (var->varlevelsup > 0)
@@ -1787,7 +1789,8 @@ ReplaceVarFromTargetList(const Var *var,
 						 List *targetlist,
 						 int result_relation,
 						 ReplaceVarsNoMatchOption nomatch_option,
-						 int nomatch_varno)
+						 int nomatch_varno,
+						 Provenances *provenances)
 {
 	TargetEntry *tle;
 
@@ -1836,7 +1839,8 @@ ReplaceVarFromTargetList(const Var *var,
 												 targetlist,
 												 result_relation,
 												 nomatch_option,
-												 nomatch_varno);
+												 nomatch_varno,
+												 provenances);
 			rowexpr->args = lappend(rowexpr->args, field);
 		}
 
@@ -1891,7 +1895,8 @@ ReplaceVarFromTargetList(const Var *var,
 												 var->vartypmod,
 												 var->varcollid,
 												 vartyplen,
-												 vartypbyval);
+												 vartypbyval,
+												 provenances);
 				}
 		}
 		elog(ERROR, "could not find replacement targetlist entry for attno %d",
@@ -1958,7 +1963,8 @@ ReplaceVarsFromTargetList(Node *node,
 						  int result_relation,
 						  ReplaceVarsNoMatchOption nomatch_option,
 						  int nomatch_varno,
-						  bool *outer_hasSubLinks)
+						  bool *outer_hasSubLinks,
+						  Provenances *provenances)
 {
 	ReplaceVarsFromTargetList_context context;
 
@@ -1967,6 +1973,7 @@ ReplaceVarsFromTargetList(Node *node,
 	context.result_relation = result_relation;
 	context.nomatch_option = nomatch_option;
 	context.nomatch_varno = nomatch_varno;
+	context.provenances = provenances;
 
 	return replace_rte_variables(node, target_varno, sublevels_up,
 								 ReplaceVarsFromTargetList_callback,

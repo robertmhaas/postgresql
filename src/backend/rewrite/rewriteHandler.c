@@ -684,7 +684,8 @@ rewriteRuleAction(Query *parsetree,
 									  REPLACEVARS_CHANGE_VARNO :
 									  REPLACEVARS_SUBSTITUTE_NULL,
 									  current_varno,
-									  &sub_action->hasSubLinks);
+									  &sub_action->hasSubLinks,
+									  provenances);
 
 		/*
 		 * Now rewrite new.attribute in sub_action, using both the target list
@@ -701,7 +702,8 @@ rewriteRuleAction(Query *parsetree,
 									  REPLACEVARS_CHANGE_VARNO :
 									  REPLACEVARS_SUBSTITUTE_NULL,
 									  current_varno,
-									  NULL);
+									  NULL,
+									  provenances);
 		if (sub_action_ptr)
 			*sub_action_ptr = sub_action;
 		else
@@ -746,7 +748,8 @@ rewriteRuleAction(Query *parsetree,
 									  rule_action->resultRelation,
 									  REPLACEVARS_REPORT_ERROR,
 									  0,
-									  &rule_action->hasSubLinks);
+									  &rule_action->hasSubLinks,
+									  provenances);
 
 		/* use triggering query's aliases for OLD and NEW in RETURNING list */
 		rule_action->returningOldAlias = parsetree->returningOldAlias;
@@ -1084,7 +1087,8 @@ rewriteTargetListIU(List *targetList,
 													 att_tup->atttypmod,
 													 att_tup->attcollation,
 													 att_tup->attlen,
-													 att_tup->attbyval);
+													 att_tup->attbyval,
+													 provenances);
 			}
 
 			if (new_expr)
@@ -1305,6 +1309,7 @@ build_column_default(Relation rel, int attrno, Provenances *provenances)
 	int32		atttypmod = att_tup->atttypmod;
 	Node	   *expr = NULL;
 	Oid			exprtype;
+	ParseState *pstate;
 
 	Assert(provenances != NULL);
 
@@ -1355,8 +1360,11 @@ build_column_default(Relation rel, int attrno, Provenances *provenances)
 	 */
 	exprtype = exprType(expr);
 
-	/* PROVENANCE-TODO: FIXME */
-	expr = coerce_to_target_type(NULL,	/* no UNKNOWN params here */
+	/* dummy parse state to carry provenances */
+	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
+
+	expr = coerce_to_target_type(pstate,
 								 expr, exprtype,
 								 atttype, atttypmod,
 								 COERCION_ASSIGNMENT,
@@ -1655,7 +1663,8 @@ rewriteValuesRTE(Query *parsetree, RangeTblEntry *rte, int rti,
 													 att_tup->atttypmod,
 													 att_tup->attcollation,
 													 att_tup->attlen,
-													 att_tup->attbyval);
+													 att_tup->attbyval,
+													 provenances);
 				}
 				newList = lappend(newList, new_expr);
 			}
@@ -2490,7 +2499,8 @@ CopyAndAddInvertedQual(Query *parsetree,
 									  REPLACEVARS_CHANGE_VARNO :
 									  REPLACEVARS_SUBSTITUTE_NULL,
 									  rt_index,
-									  &parsetree->hasSubLinks);
+									  &parsetree->hasSubLinks,
+									  provenances);
 
 		new_qual = ReplaceVarsFromTargetList(new_qual,
 											 PRS2_NEW_VARNO,
@@ -2503,7 +2513,8 @@ CopyAndAddInvertedQual(Query *parsetree,
 											 REPLACEVARS_CHANGE_VARNO :
 											 REPLACEVARS_SUBSTITUTE_NULL,
 											 rt_index,
-											 &parsetree->hasSubLinks);
+											 &parsetree->hasSubLinks,
+											 provenances);
 	}
 	/* And attach the fixed qual */
 	AddInvertedQual(parsetree, new_qual);
@@ -3372,7 +3383,7 @@ error_view_not_updatable(Relation view,
  * the recursion in RewriteQuery.
  */
 static Query *
-rewriteTargetView(Query *parsetree, Relation view)
+rewriteTargetView(Query *parsetree, Relation view, Provenances *provenances)
 {
 	Query	   *viewquery;
 	bool		insert_or_update;
@@ -3782,7 +3793,8 @@ rewriteTargetView(Query *parsetree, Relation view)
 								  new_rt_index,
 								  REPLACEVARS_REPORT_ERROR,
 								  0,
-								  NULL);
+								  NULL,
+								  provenances);
 
 	/*
 	 * Update all other RTI references in the query that point to the view
@@ -3934,7 +3946,8 @@ rewriteTargetView(Query *parsetree, Relation view)
 									  new_rt_index,
 									  REPLACEVARS_REPORT_ERROR,
 									  0,
-									  &parsetree->hasSubLinks);
+									  &parsetree->hasSubLinks,
+									  provenances);
 	}
 
 	if (parsetree->forPortionOf && parsetree->commandType == CMD_UPDATE)
@@ -4528,7 +4541,8 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length,
 			 * This throws an error if the view can't be automatically
 			 * updated.
 			 */
-			parsetree = rewriteTargetView(parsetree, rt_entry_relation);
+			parsetree = rewriteTargetView(parsetree, rt_entry_relation,
+										  provenances);
 
 			/*
 			 * At this point product_queries contains any DO ALSO rule
@@ -4801,7 +4815,7 @@ expand_generated_columns_in_expr(Node *node, Relation rel, int rt_index,
 			 */
 			node = ReplaceVarsFromTargetList(node, rt_index, 0, rte, vcols, 0,
 											 REPLACEVARS_CHANGE_VARNO, rt_index,
-											 NULL);
+											 NULL, provenances);
 		}
 	}
 

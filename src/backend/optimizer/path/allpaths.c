@@ -162,9 +162,10 @@ static bool targetIsInAllPartitionLists(TargetEntry *tle, Query *query);
 static pushdown_safe_type qual_is_pushdown_safe(Query *subquery, Index rti,
 												RestrictInfo *rinfo,
 												pushdown_safety_info *safetyInfo);
-static void subquery_push_qual(Query *subquery,
+static void subquery_push_qual(PlannerInfo *root, Query *subquery,
 							   RangeTblEntry *rte, Index rti, Node *qual);
-static void recurse_push_qual(Node *setOp, Query *topquery,
+static void recurse_push_qual(PlannerInfo *root, Node *setOp,
+							  Query *topquery,
 							  RangeTblEntry *rte, Index rti, Node *qual);
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
 										   Bitmapset *extra_used_attrs);
@@ -2767,7 +2768,7 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 			{
 				case PUSHDOWN_SAFE:
 					/* Push it down */
-					subquery_push_qual(subquery, rte, rti, clause);
+					subquery_push_qual(root, subquery, rte, rti, clause);
 					break;
 
 				case PUSHDOWN_WINDOWCLAUSE_RUNCOND:
@@ -4543,12 +4544,13 @@ qual_is_pushdown_safe(Query *subquery, Index rti, RestrictInfo *rinfo,
  * subquery_push_qual - push down a qual that we have determined is safe
  */
 static void
-subquery_push_qual(Query *subquery, RangeTblEntry *rte, Index rti, Node *qual)
+subquery_push_qual(PlannerInfo *root, Query *subquery, RangeTblEntry *rte,
+				   Index rti, Node *qual)
 {
 	if (subquery->setOperations != NULL)
 	{
 		/* Recurse to push it separately to each component query */
-		recurse_push_qual(subquery->setOperations, subquery,
+		recurse_push_qual(root, subquery->setOperations, subquery,
 						  rte, rti, qual);
 	}
 	else
@@ -4566,7 +4568,8 @@ subquery_push_qual(Query *subquery, RangeTblEntry *rte, Index rti, Node *qual)
 										 subquery->targetList,
 										 subquery->resultRelation,
 										 REPLACEVARS_REPORT_ERROR, 0,
-										 &subquery->hasSubLinks);
+										 &subquery->hasSubLinks,
+										 root->glob->provenances);
 
 		/*
 		 * Now attach the qual to the proper place: normally WHERE, but if the
@@ -4591,7 +4594,7 @@ subquery_push_qual(Query *subquery, RangeTblEntry *rte, Index rti, Node *qual)
  * Helper routine to recurse through setOperations tree
  */
 static void
-recurse_push_qual(Node *setOp, Query *topquery,
+recurse_push_qual(PlannerInfo *root, Node *setOp, Query *topquery,
 				  RangeTblEntry *rte, Index rti, Node *qual)
 {
 	if (IsA(setOp, RangeTblRef))
@@ -4601,14 +4604,14 @@ recurse_push_qual(Node *setOp, Query *topquery,
 		Query	   *subquery = subrte->subquery;
 
 		Assert(subquery != NULL);
-		subquery_push_qual(subquery, rte, rti, qual);
+		subquery_push_qual(root, subquery, rte, rti, qual);
 	}
 	else if (IsA(setOp, SetOperationStmt))
 	{
 		SetOperationStmt *op = (SetOperationStmt *) setOp;
 
-		recurse_push_qual(op->larg, topquery, rte, rti, qual);
-		recurse_push_qual(op->rarg, topquery, rte, rti, qual);
+		recurse_push_qual(root, op->larg, topquery, rte, rti, qual);
+		recurse_push_qual(root, op->rarg, topquery, rte, rti, qual);
 	}
 	else
 	{

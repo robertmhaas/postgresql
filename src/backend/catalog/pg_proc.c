@@ -913,6 +913,11 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 	/* Postpone body checks if !check_function_bodies */
 	if (check_function_bodies)
 	{
+		Provenances *provenances;
+
+		provenances = InitProvenancesForCache(PROVENANCE_FUNCTION,
+											  funcoid, proc->proowner);
+
 		tmp = SysCacheGetAttrNotNull(PROCOID, tuple, Anum_pg_proc_prosrc);
 		prosrc = TextDatumGetCString(tmp);
 
@@ -933,10 +938,6 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 		{
 			Node	   *n;
 			List	   *stored_query_list;
-			Provenances *provenances;
-
-			provenances = InitProvenancesForCache(PROVENANCE_FUNCTION,
-												  funcoid, proc->proowner);
 
 			n = stringToNode(TextDatumGetCString(tmp), 0);
 			if (IsA(n, List))
@@ -991,12 +992,7 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 				{
 					RawStmt    *parsetree = lfirst_node(RawStmt, lc);
 					List	   *querytree_sublist;
-					Provenances *provenances;
 
-					provenances =
-						InitProvenancesForCache(PROVENANCE_FUNCTION,
-												proc->oid,
-												proc->proowner);
 					querytree_sublist =
 						pg_analyze_and_rewrite_withcb(parsetree,
 													  prosrc,
@@ -1022,7 +1018,8 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 			(void) check_sql_fn_retval(querytree_list,
 									   rettype, rettupdesc,
 									   proc->prokind,
-									   false);
+									   false,
+									   provenances);
 		}
 
 		error_context_stack = sqlerrcontext.previous;

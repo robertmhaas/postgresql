@@ -40,7 +40,8 @@ typedef enum
 extern PGDLLIMPORT int plan_cache_mode;
 
 /* Optional callback to editorialize on rewritten parse trees */
-typedef void (*PostRewriteHook) (List *querytree_list, void *arg);
+typedef void (*PostRewriteHook) (List *querytree_list, void *arg,
+								 Provenances *provenances);
 
 #define CACHEDPLANSOURCE_MAGIC		195726186
 #define CACHEDPLAN_MAGIC			953717834

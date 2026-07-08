@@ -33,13 +33,13 @@
 #include "utils/typcache.h"
 
 
-static Node *coerce_type_typmod(Node *node,
+static Node *coerce_type_typmod(ParseState *pstate, Node *node,
 								Oid targetTypeId, int32 targetTypMod,
 								CoercionContext ccontext, CoercionForm cformat,
 								int location,
 								bool hideInputCoercion);
 static void hide_coercion_node(Node *node);
-static Node *build_coercion_expression(Node *node,
+static Node *build_coercion_expression(ParseState *pstate, Node *node,
 									   CoercionPathType pathtype,
 									   Oid funcId,
 									   Oid targetTypeId, int32 targetTypMod,
@@ -67,7 +67,7 @@ static bool typeIsOfTypedTable(Oid reltypeId, Oid reloftypeId);
  * conversion is not possible.  (We do this, rather than ereport'ing directly,
  * so that callers can generate custom error messages indicating context.)
  *
- * pstate - parse state (can be NULL, see coerce_type)
+ * pstate - parse state (must not be NULL, and must carry provenances)
  * expr - input expression tree (already transformed by transformExpr)
  * exprtype - result type of expr
  * targettype - desired result type
@@ -84,6 +84,8 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
 {
 	Node	   *result;
 	Node	   *origexpr;
+
+	Assert(pstate->p_provenances != NULL);
 
 	if (!can_coerce_type(1, &exprtype, &targettype, ccontext))
 		return NULL;
@@ -111,7 +113,7 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
 	 * well as a type coercion.  If we find ourselves adding both, force the
 	 * inner coercion node to implicit display form.
 	 */
-	result = coerce_type_typmod(result,
+	result = coerce_type_typmod(pstate, result,
 								targettype, targettypmod,
 								ccontext, cformat, location,
 								(result != expr && !IsA(result, Const)));
@@ -147,9 +149,8 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
  * applies length conversion, and in those cases only, the result will
  * already be properly coerced to the specified typmod.
  *
- * pstate is only used in the case that we are able to resolve the type of
- * a previously UNKNOWN Param.  It is okay to pass pstate = NULL if the
- * caller does not want type information updated for Params.
+ * pstate carries provenances, and is also used in the case that we are able to
+ * resolve the type of a previously UNKNOWN Param.
  *
  * Note: this function must not modify the given expression tree, only add
  * decoration on top of it.  See transformSetOperationTree, for example.
@@ -162,6 +163,8 @@ coerce_type(ParseState *pstate, Node *node,
 	Node	   *result;
 	CoercionPathType pathtype;
 	Oid			funcId;
+
+	Assert(pstate->p_provenances != NULL);
 
 	if (targetTypeId == inputTypeId ||
 		node == NULL)
@@ -360,7 +363,7 @@ coerce_type(ParseState *pstate, Node *node,
 
 		/* If target is a domain, apply constraints. */
 		if (baseTypeId != targetTypeId)
-			result = coerce_to_domain(result,
+			result = coerce_to_domain(pstate, result,
 									  baseTypeId, baseTypeMod,
 									  targetTypeId,
 									  ccontext, cformat, location,
@@ -430,7 +433,7 @@ coerce_type(ParseState *pstate, Node *node,
 			 * and we need to extract the correct typmod to use from the
 			 * domain's typtypmod.
 			 */
-			result = build_coercion_expression(node, pathtype, funcId,
+			result = build_coercion_expression(pstate, node, pathtype, funcId,
 											   baseTypeId, baseTypeMod,
 											   ccontext, cformat, location);
 
@@ -439,7 +442,8 @@ coerce_type(ParseState *pstate, Node *node,
 			 * type ID, hiding the previous coercion node.
 			 */
 			if (targetTypeId != baseTypeId)
-				result = coerce_to_domain(result, baseTypeId, baseTypeMod,
+				result = coerce_to_domain(pstate, result,
+										  baseTypeId, baseTypeMod,
 										  targetTypeId,
 										  ccontext, cformat, location,
 										  true);
@@ -455,7 +459,8 @@ coerce_type(ParseState *pstate, Node *node,
 			 * that must be accounted for.  If the destination is a domain
 			 * then we won't need a RelabelType node.
 			 */
-			result = coerce_to_domain(node, baseTypeId, baseTypeMod,
+			result = coerce_to_domain(pstate, node,
+									  baseTypeId, baseTypeMod,
 									  targetTypeId,
 									  ccontext, cformat, location,
 									  false);
@@ -661,6 +666,7 @@ can_coerce_type(int nargs, const Oid *input_typeids, const Oid *target_typeids,
 /*
  * Create an expression tree to represent coercion to a domain type.
  *
+ * 'pstate': parse state, for provenances
  * 'arg': input expression
  * 'baseTypeId': base type of domain
  * 'baseTypeMod': base type typmod of domain
@@ -673,9 +679,9 @@ can_coerce_type(int nargs, const Oid *input_typeids, const Oid *target_typeids,
  * If the target type isn't a domain, the given 'arg' is returned as-is.
  */
 Node *
-coerce_to_domain(Node *arg, Oid baseTypeId, int32 baseTypeMod, Oid typeId,
-				 CoercionContext ccontext, CoercionForm cformat, int location,
-				 bool hideInputCoercion)
+coerce_to_domain(ParseState *pstate, Node *arg, Oid baseTypeId, int32 baseTypeMod,
+				 Oid typeId, CoercionContext ccontext, CoercionForm cformat,
+				 int location, bool hideInputCoercion)
 {
 	CoerceToDomain *result;
 
@@ -703,7 +709,7 @@ coerce_to_domain(Node *arg, Oid baseTypeId, int32 baseTypeMod, Oid typeId,
 	 * would be safe to do anyway, without lots of knowledge about what the
 	 * base type thinks the typmod means.
 	 */
-	arg = coerce_type_typmod(arg, baseTypeId, baseTypeMod,
+	arg = coerce_type_typmod(pstate, arg, baseTypeId, baseTypeMod,
 							 ccontext, COERCE_IMPLICIT_CAST, location,
 							 false);
 
@@ -749,7 +755,8 @@ coerce_to_domain(Node *arg, Oid baseTypeId, int32 baseTypeMod, Oid typeId,
  * needed to produce the domain value in the first place.  So, no getBaseType.
  */
 static Node *
-coerce_type_typmod(Node *node, Oid targetTypeId, int32 targetTypMod,
+coerce_type_typmod(ParseState *pstate, Node *node,
+				   Oid targetTypeId, int32 targetTypMod,
 				   CoercionContext ccontext, CoercionForm cformat,
 				   int location,
 				   bool hideInputCoercion)
@@ -777,7 +784,7 @@ coerce_type_typmod(Node *node, Oid targetTypeId, int32 targetTypMod,
 
 	if (pathtype != COERCION_PATH_NONE)
 	{
-		node = build_coercion_expression(node, pathtype, funcId,
+		node = build_coercion_expression(pstate, node, pathtype, funcId,
 										 targetTypeId, targetTypMod,
 										 ccontext, cformat, location);
 	}
@@ -835,7 +842,7 @@ hide_coercion_node(Node *node)
  * since there is no difference in terms of the calling convention.
  */
 static Node *
-build_coercion_expression(Node *node,
+build_coercion_expression(ParseState *pstate, Node *node,
 						  CoercionPathType pathtype,
 						  Oid funcId,
 						  Oid targetTypeId, int32 targetTypMod,
@@ -912,10 +919,8 @@ build_coercion_expression(Node *node,
 		}
 
 		/*
-		 * PROVENANCE-TODO: We need to pass a pstate down through both
-		 * coerce_type and coerce_to_target_type in all cases, so tha the
-		 * caller can compute a provenance index for the pg_cast entry that
-		 * resulted in the call to this function.
+		 * PROVENANCE-TODO: Caller needs to pass a ProvenanceIndex so we know what
+		 * to pass to makeFuncExpr here.
 		 */
 		fexpr = makeFuncExpr(funcId, targetTypeId, args,
 							 InvalidOid, InvalidOid, cformat, 0);
@@ -956,7 +961,7 @@ build_coercion_expression(Node *node,
 		targetElementType = get_element_type(targetTypeId);
 		Assert(OidIsValid(targetElementType));
 
-		elemexpr = coerce_to_target_type(NULL,
+		elemexpr = coerce_to_target_type(pstate,
 										 (Node *) ctest,
 										 ctest->typeId,
 										 targetElementType,
@@ -994,6 +999,11 @@ build_coercion_expression(Node *node,
 		/* resultcollid will be set by parse_collate.c */
 		iocoerce->coerceformat = cformat;
 		iocoerce->location = location;
+
+		/*
+		 * PROVENANCE-TODO: Caller needs to pass a ProvenanceIndex so we know how
+		 * to set iocoerce->pidx
+		 */
 
 		return (Node *) iocoerce;
 	}
@@ -1141,7 +1151,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 	if (baseTypeId != targetTypeId)
 	{
 		rowexpr->row_format = COERCE_IMPLICIT_CAST;
-		return coerce_to_domain((Node *) rowexpr,
+		return coerce_to_domain(pstate, (Node *) rowexpr,
 								baseTypeId, baseTypeMod,
 								targetTypeId,
 								ccontext, cformat, location,
@@ -1275,7 +1285,7 @@ coerce_to_specific_type(ParseState *pstate, Node *node,
  */
 Node *
 coerce_null_to_domain(Oid typid, int32 typmod, Oid collation,
-					  int typlen, bool typbyval)
+					  int typlen, bool typbyval, Provenances *provenances)
 {
 	Node	   *result;
 	Oid			baseTypeId;
@@ -1294,13 +1304,21 @@ coerce_null_to_domain(Oid typid, int32 typmod, Oid collation,
 								true,	/* isnull */
 								typbyval);
 	if (typid != baseTypeId)
-		result = coerce_to_domain(result,
+	{
+		ParseState *pstate;
+
+		pstate = make_parsestate(NULL);
+		pstate->p_provenances = provenances;
+
+		result = coerce_to_domain(pstate, result,
 								  baseTypeId, baseTypeMod,
 								  typid,
 								  COERCION_IMPLICIT,
 								  COERCE_IMPLICIT_CAST,
 								  -1,
 								  false);
+	}
+
 	return result;
 }
 

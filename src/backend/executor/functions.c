@@ -214,7 +214,8 @@ static void sql_compile_callback(FunctionCallInfo fcinfo,
 								 CachedFunction *cfunc,
 								 bool forValidator);
 static void sql_delete_callback(CachedFunction *cfunc);
-static void sql_postrewrite_callback(List *querytree_list, void *arg);
+static void sql_postrewrite_callback(List *querytree_list, void *arg,
+									 Provenances *provenances);
 static void postquel_start(execution_state *es, SQLFunctionCachePtr fcache);
 static bool postquel_getnext(execution_state *es, SQLFunctionCachePtr fcache);
 static void postquel_end(execution_state *es, SQLFunctionCachePtr fcache);
@@ -230,12 +231,14 @@ static void RemoveSQLFunctionCache(void *arg);
 static void check_sql_fn_statement(List *queryTreeList);
 static bool check_sql_stmt_retval(List *queryTreeList,
 								  Oid rettype, TupleDesc rettupdesc,
-								  char prokind, bool insertDroppedCols);
+								  char prokind, bool insertDroppedCols,
+								  Provenances *provenances);
 static bool coerce_fn_result_column(TargetEntry *src_tle,
 									Oid res_type, int32 res_typmod,
 									bool tlist_is_modifiable,
 									List **upper_tlist,
-									bool *upper_tlist_nontrivial);
+									bool *upper_tlist_nontrivial,
+									Provenances *provenances);
 static List *get_sql_fn_result_tlist(List *queryTreeList);
 static void sqlfunction_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
 static bool sqlfunction_receive(TupleTableSlot *slot, DestReceiver *self);
@@ -916,6 +919,14 @@ prepare_next_query(SQLFunctionHashEntry *func)
 	islast = (qindex + 1 >= func->num_queries);
 
 	/*
+	 * We're about to rewrite the query, which can introduce new provenances, and
+	 * possibly also parse-analyze it, which can also introduce new provenances.
+	 * We don't want to pollute the original cache entry when we do those things,
+	 * so make a copy of its provenances.
+	 */
+	provenances = copyObject(func->provenances);
+
+	/*
 	 * Parse and/or rewrite the query, creating a CachedPlanSource that holds
 	 * a copy of the original parsetree.  Note fine point: we make a copy of
 	 * each original parsetree to ensure that the source_list in pcontext
@@ -930,11 +941,10 @@ prepare_next_query(SQLFunctionHashEntry *func)
 		Query	   *parsetree = list_nth_node(Query, func->source_list, qindex);
 
 		parsetree = copyObject(parsetree);
-		provenances = copyObject(func->provenances);
 		plansource = CreateCachedPlanForQuery(parsetree,
 											  func->src,
 											  CreateCommandTag((Node *) parsetree),
-											  func->provenances);
+											  provenances);
 		AcquireRewriteLocks(parsetree, true, false);
 		queryTree_list = pg_rewrite_query(parsetree, provenances);
 	}
@@ -944,11 +954,10 @@ prepare_next_query(SQLFunctionHashEntry *func)
 		RawStmt    *parsetree = list_nth_node(RawStmt, func->source_list, qindex);
 
 		parsetree = copyObject(parsetree);
-		provenances = copyObject(func->provenances);
 		plansource = CreateCachedPlan(parsetree,
 									  func->src,
 									  CreateCommandTag(parsetree->stmt),
-									  func->provenances);
+									  provenances);
 		queryTree_list = pg_analyze_and_rewrite_withcb(parsetree,
 													   func->src,
 													   (ParserSetupHook) sql_fn_parser_setup,
@@ -985,7 +994,8 @@ prepare_next_query(SQLFunctionHashEntry *func)
 												   func->rettype,
 												   func->rettupdesc,
 												   func->prokind,
-												   false);
+												   false,
+												   provenances);
 
 	/*
 	 * Now that check_sql_stmt_retval has done its thing, we can complete plan
@@ -1258,7 +1268,8 @@ sql_delete_callback(CachedFunction *cfunc)
  * rewriting and calling CompleteCachedPlan().
  */
 static void
-sql_postrewrite_callback(List *querytree_list, void *arg)
+sql_postrewrite_callback(List *querytree_list, void *arg,
+						 Provenances *provenances)
 {
 	/*
 	 * Check that there are no statements we don't want to allow.  (Presently,
@@ -1281,7 +1292,8 @@ sql_postrewrite_callback(List *querytree_list, void *arg)
 											 func->rettype,
 											 func->rettupdesc,
 											 func->prokind,
-											 false);
+											 false,
+											 provenances);
 		if (returnsTuple != func->returnsTuple)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -2134,7 +2146,8 @@ bool
 check_sql_fn_retval(List *queryTreeLists,
 					Oid rettype, TupleDesc rettupdesc,
 					char prokind,
-					bool insertDroppedCols)
+					bool insertDroppedCols,
+					Provenances *provenances)
 {
 	List	   *queryTreeList;
 
@@ -2157,7 +2170,8 @@ check_sql_fn_retval(List *queryTreeLists,
 
 	return check_sql_stmt_retval(queryTreeList,
 								 rettype, rettupdesc,
-								 prokind, insertDroppedCols);
+								 prokind, insertDroppedCols,
+								 provenances);
 }
 
 /*
@@ -2167,7 +2181,8 @@ check_sql_fn_retval(List *queryTreeLists,
 static bool
 check_sql_stmt_retval(List *queryTreeList,
 					  Oid rettype, TupleDesc rettupdesc,
-					  char prokind, bool insertDroppedCols)
+					  char prokind, bool insertDroppedCols,
+					  Provenances *provenances)
 {
 	bool		is_tuple_result = false;
 	Query	   *parse;
@@ -2288,7 +2303,8 @@ check_sql_stmt_retval(List *queryTreeList,
 		if (!coerce_fn_result_column(tle, rettype, -1,
 									 tlist_is_modifiable,
 									 &upper_tlist,
-									 &upper_tlist_nontrivial))
+									 &upper_tlist_nontrivial,
+									 provenances))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 					 errmsg("return type mismatch in function declared to return %s",
@@ -2342,7 +2358,8 @@ check_sql_stmt_retval(List *queryTreeList,
 			if (coerce_fn_result_column(tle, rettype, -1,
 										tlist_is_modifiable,
 										&upper_tlist,
-										&upper_tlist_nontrivial))
+										&upper_tlist_nontrivial,
+										provenances))
 			{
 				/* Note that we're NOT setting is_tuple_result */
 				goto tlist_coercion_finished;
@@ -2411,7 +2428,8 @@ check_sql_stmt_retval(List *queryTreeList,
 										 attr->atttypid, attr->atttypmod,
 										 tlist_is_modifiable,
 										 &upper_tlist,
-										 &upper_tlist_nontrivial))
+										 &upper_tlist_nontrivial,
+										 provenances))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 						 errmsg("return type mismatch in function declared to return %s",
@@ -2540,11 +2558,17 @@ coerce_fn_result_column(TargetEntry *src_tle,
 						int32 res_typmod,
 						bool tlist_is_modifiable,
 						List **upper_tlist,
-						bool *upper_tlist_nontrivial)
+						bool *upper_tlist_nontrivial,
+						Provenances *provenances)
 {
 	TargetEntry *new_tle;
 	Expr	   *new_tle_expr;
 	Node	   *cast_result;
+	ParseState *pstate;
+
+	/* dummy parse state to carry provenances */
+	pstate = make_parsestate(NULL);
+	pstate->p_provenances = provenances;
 
 	/*
 	 * If the TLE has a sortgroupref marking, don't change it, as it probably
@@ -2555,7 +2579,7 @@ coerce_fn_result_column(TargetEntry *src_tle,
 	if (tlist_is_modifiable && src_tle->ressortgroupref == 0)
 	{
 		/* OK to modify src_tle in place, if necessary */
-		cast_result = coerce_to_target_type(NULL,
+		cast_result = coerce_to_target_type(pstate,
 											(Node *) src_tle->expr,
 											exprType((Node *) src_tle->expr),
 											res_type, res_typmod,
@@ -2574,7 +2598,7 @@ coerce_fn_result_column(TargetEntry *src_tle,
 		/* Any casting must happen in the upper tlist */
 		Var		   *var = makeVarFromTargetEntry(1, src_tle);
 
-		cast_result = coerce_to_target_type(NULL,
+		cast_result = coerce_to_target_type(pstate,
 											(Node *) var,
 											var->vartype,
 											res_type, res_typmod,

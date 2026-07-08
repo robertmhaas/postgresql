@@ -67,7 +67,8 @@ static List *plan_union_children(PlannerInfo *root,
 								 List **tlist_list,
 								 List **istrivial_tlist);
 static void postprocess_setop_rel(PlannerInfo *root, RelOptInfo *rel);
-static List *generate_setop_tlist(List *colTypes, List *colCollations,
+static List *generate_setop_tlist(PlannerInfo *root,
+								  List *colTypes, List *colCollations,
 								  Index varno,
 								  bool hack_constants,
 								  List *input_tlist,
@@ -262,7 +263,7 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 			elog(ERROR, "unexpected outer reference in set operation subquery");
 
 		/* Figure out the appropriate target list for this subquery. */
-		tlist = generate_setop_tlist(colTypes, colCollations,
+		tlist = generate_setop_tlist(root, colTypes, colCollations,
 									 rtr->rtindex,
 									 true,
 									 subroot->processed_tlist,
@@ -308,7 +309,7 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 			bool		trivial_tlist;
 			ListCell   *lc;
 
-			*pTargetList = generate_setop_tlist(colTypes, colCollations,
+			*pTargetList = generate_setop_tlist(root, colTypes, colCollations,
 												0,
 												false,
 												*pTargetList,
@@ -1103,7 +1104,7 @@ generate_nonunion_paths(SetOperationStmt *op, PlannerInfo *root,
 	 * concerned, but we must make it look real anyway for the benefit of the
 	 * next plan level up.
 	 */
-	tlist = generate_setop_tlist(op->colTypes, op->colCollations,
+	tlist = generate_setop_tlist(root, op->colTypes, op->colCollations,
 								 0, false, lpath_tlist, refnames_tlist,
 								 &result_trivial_tlist);
 
@@ -1486,7 +1487,8 @@ postprocess_setop_rel(PlannerInfo *root, RelOptInfo *rel)
  * trivial_tlist: output parameter, set to true if targetlist is trivial
  */
 static List *
-generate_setop_tlist(List *colTypes, List *colCollations,
+generate_setop_tlist(PlannerInfo *root,
+					 List *colTypes, List *colCollations,
 					 Index varno,
 					 bool hack_constants,
 					 List *input_tlist,
@@ -1545,6 +1547,12 @@ generate_setop_tlist(List *colTypes, List *colCollations,
 
 		if (exprType(expr) != colType)
 		{
+			ParseState *pstate;
+
+			/* dummy parse state to carry provenances */
+			pstate = make_parsestate(NULL);
+			pstate->p_provenances = root->glob->provenances;
+
 			/*
 			 * Note: it's not really cool to be applying coerce_to_common_type
 			 * here; one notable point is that assign_expr_collations never
@@ -1553,7 +1561,7 @@ generate_setop_tlist(List *colTypes, List *colCollations,
 			 * It would likely be best to make the parser generate the correct
 			 * output tlist for every set-op to begin with, though.
 			 */
-			expr = coerce_to_common_type(NULL,	/* no UNKNOWNs here */
+			expr = coerce_to_common_type(pstate,
 										 expr,
 										 colType,
 										 "UNION/INTERSECT/EXCEPT");

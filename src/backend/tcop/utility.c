@@ -1362,7 +1362,8 @@ ProcessUtilitySlow(ParseState *pstate,
 							 * if requested, for descendants
 							 */
 							address =
-								AlterDomainDefault(stmt->typeName,
+								AlterDomainDefault(pstate,
+												   stmt->typeName,
 												   stmt->def);
 							break;
 						case AD_DropNotNull:

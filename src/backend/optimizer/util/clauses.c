@@ -5572,7 +5572,8 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	if (check_sql_fn_retval(list_make1(querytree_list),
 							result_type, rettupdesc,
 							funcform->prokind,
-							false))
+							false,
+							context->provenances))
 		goto fail;				/* reject whole-tuple-result cases */
 
 	/*
@@ -6247,7 +6248,8 @@ inline_sql_function_in_from(PlannerInfo *root,
 	if (!check_sql_fn_retval(list_make1(querytree_list),
 							 fexpr->funcresulttype, rettupdesc,
 							 funcform->prokind,
-							 true) &&
+							 true,
+							 provenances) &&
 		(functypclass == TYPEFUNC_COMPOSITE ||
 		 functypclass == TYPEFUNC_COMPOSITE_DOMAIN ||
 		 functypclass == TYPEFUNC_RECORD))

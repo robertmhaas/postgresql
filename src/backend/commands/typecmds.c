@@ -2649,12 +2649,11 @@ DefineCompositeType(ParseState *pstate, RangeVar *typevar, List *coldeflist)
  * Returns ObjectAddress of the modified domain.
  */
 ObjectAddress
-AlterDomainDefault(List *names, Node *defaultRaw)
+AlterDomainDefault(ParseState *pstate, List *names, Node *defaultRaw)
 {
 	TypeName   *typename;
 	Oid			domainoid;
 	HeapTuple	tup;
-	ParseState *pstate;
 	Relation	rel;
 	char	   *defaultValue;
 	Node	   *defaultExpr = NULL; /* NULL if no default specified */
@@ -2685,9 +2684,6 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 	/* Store the new default into the tuple */
 	if (defaultRaw)
 	{
-		/* Create a dummy ParseState for transformExpr */
-		pstate = make_parsestate(NULL);
-
 		/*
 		 * Cook the colDef->raw_expr into an expression. Note: Name is
 		 * strictly for error message

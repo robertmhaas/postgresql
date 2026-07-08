@@ -864,9 +864,17 @@ RevalidateCachedQuery(CachedPlanSource *plansource,
 		provenances = NULL;
 	}
 
-	/* Apply post-rewrite callback if there is one */
+	/*
+	 * Apply post-rewrite callback if there is one.
+	 *
+	 * NB: We must pass down provenances here rather than relying on the caller to
+	 * feed it through postRewriteArg, because the callback is going to want the
+	 * provenances for tlist, and rewriting may have added provenances to what
+	 * the caller supplied.
+	 */
 	if (plansource->postRewrite != NULL)
-		plansource->postRewrite(tlist, plansource->postRewriteArg);
+		plansource->postRewrite(tlist, plansource->postRewriteArg,
+								provenances);
 
 	/* Release snapshot if we got one */
 	if (snapshot_set)

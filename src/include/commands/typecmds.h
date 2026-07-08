@@ -33,7 +33,8 @@ extern Oid	AssignTypeArrayOid(void);
 extern Oid	AssignTypeMultirangeOid(void);
 extern Oid	AssignTypeMultirangeArrayOid(void);
 
-extern ObjectAddress AlterDomainDefault(List *names, Node *defaultRaw);
+extern ObjectAddress AlterDomainDefault(ParseState *pstate,
+										List *names, Node *defaultRaw);
 extern ObjectAddress AlterDomainNotNull(List *names, bool notNull);
 extern ObjectAddress AlterDomainAddConstraint(List *names, Node *newConstraint,
 											  ObjectAddress *constrAddr,

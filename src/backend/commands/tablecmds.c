@@ -7714,12 +7714,18 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			Oid			baseTypeId;
 			int32		baseTypeMod;
 			Oid			baseTypeColl;
+			ParseState *pstate;
 
 			baseTypeMod = attribute->atttypmod;
 			baseTypeId = getBaseTypeAndTypmod(attribute->atttypid, &baseTypeMod);
 			baseTypeColl = get_typcollation(baseTypeId);
 			defval = (Expr *) makeNullConst(baseTypeId, baseTypeMod, baseTypeColl);
-			defval = (Expr *) coerce_to_target_type(NULL,
+
+			/* dummy parse state to carry provenances */
+			pstate = make_parsestate(NULL);
+			pstate->p_provenances = provenances;
+
+			defval = (Expr *) coerce_to_target_type(pstate,
 													(Node *) defval,
 													baseTypeId,
 													attribute->atttypid,
@@ -14840,6 +14846,7 @@ ATPrepAlterColumnType(List **wqueue,
 	AclResult	aclresult;
 	bool		is_expr;
 
+	pstate->p_provenances = provenances;
 	pstate->p_sourcetext = context->queryString;
 
 	if (rel->rd_rel->reloftype && !recursing)
@@ -15257,10 +15264,17 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 	 */
 	if (attTup->atthasdef)
 	{
+		ParseState *pstate;
+
 		defaultexpr = build_column_default(rel, attnum, provenances);
 		Assert(defaultexpr);
 		defaultexpr = strip_implicit_coercions(defaultexpr);
-		defaultexpr = coerce_to_target_type(NULL,	/* no UNKNOWN params */
+
+		/* dummy parse state to carry provenances */
+		pstate = make_parsestate(NULL);
+		pstate->p_provenances = provenances;
+
+		defaultexpr = coerce_to_target_type(pstate,
 											defaultexpr, exprType(defaultexpr),
 											targettype, targettypmod,
 											COERCION_ASSIGNMENT,

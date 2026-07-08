@@ -59,11 +59,6 @@ The process by which the EC was build is complex, and likely involves a
 bunch of catalog lookups that aren't chained together in a strictly
 cause-and-effect fashion.
 
-plpgsql's get_cast_hashentry() needs more study. It seems to be maintaining
-some sort of cache, but it looks like that cache is for a particular
-PLpgSQL_execstate, so maybe we ought to be chaining off of the execstate's
-provenances.
-
 It appears that we will eventually need a ProvenanceIndex on every RTE.
 This can serve a few purposes. For example, if a trigger is fired on some
 table, we would naturally want to blame the decision to fire the trigger on
