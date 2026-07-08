@@ -703,10 +703,30 @@ OffsetProvenancesWalker(Node *node, ProvenanceIndex *offset)
 								 offset,
 								 0);
 
-	/*
-	 * PROVENANCE-TODO: once ProvenanceIndex fields are added to nodes such as
-	 * FuncExpr, OpExpr, etc., add cases here to adjust the index in place.
-	 */
+	if (IsA(node, Aggref))
+		((Aggref *) node)->pidx += *offset;
+	else if (IsA(node, WindowFunc))
+		((WindowFunc *) node)->pidx += *offset;
+	else if (IsA(node, FuncExpr))
+		((FuncExpr *) node)->pidx += *offset;
+	else if (IsA(node, OpExpr) || IsA(node, DistinctExpr) || IsA(node, NullIfExpr))
+		((OpExpr *) node)->pidx += *offset;
+	else if (IsA(node, ScalarArrayOpExpr))
+		((ScalarArrayOpExpr *) node)->pidx += *offset;
+	else if (IsA(node, CoerceViaIO))
+		((CoerceViaIO *) node)->pidx += *offset;
+	else if (IsA(node, RowCompareExpr))
+	{
+		RowCompareExpr *rc = (RowCompareExpr *) node;
+		int			nops = list_length(rc->opnos);
+
+		for (int i = 0; i < nops; i++)
+			rc->pidxarr[i] += *offset;
+	}
+	else if (IsA(node, MinMaxExpr))
+		((MinMaxExpr *) node)->pidx += *offset;
+	else if (IsA(node, JsonExpr))
+		((JsonExpr *) node)->pidx += *offset;
 
 	return expression_tree_walker(node,
 								  OffsetProvenancesWalker,
