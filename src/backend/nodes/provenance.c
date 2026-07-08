@@ -727,6 +727,8 @@ OffsetProvenancesWalker(Node *node, ProvenanceIndex *offset)
 		((MinMaxExpr *) node)->pidx += *offset;
 	else if (IsA(node, JsonExpr))
 		((JsonExpr *) node)->pidx += *offset;
+	else if (IsA(node, CommonTableExpr))
+		((CommonTableExpr *) node)->pidx += *offset;
 
 	return expression_tree_walker(node,
 								  OffsetProvenancesWalker,

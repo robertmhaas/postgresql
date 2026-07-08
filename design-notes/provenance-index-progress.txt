@@ -20,24 +20,21 @@ the same time).
 FuncExpr: Looks complete insofar as direct callers of makeNode(FuncExpr) are
 concerned, but there are also many indirect callers via makeFuncExpr.
 build_coercion_expression needs work. get_qual_for_hash has a note indicating
-that something is wrong. The callers in rewriteSearchCycle.c note that we seem
-to need a ProvenanceIndex in CommonTableExpr. Other callers look superficially
-OK, though perhaps bugs are lurking.
+that something is wrong. Other callers look superficially OK, though perhaps
+bugs are lurking.
 
 OpExpr: Here again, direct callers of makeNode(OpExpr) look OK, but there is
 also make_opclause. In initsplan.c, process_implied_equality and
-build_implied_join_equality lack proper handling. rewriteSearchAndCycle is
-problematic, again because there's no ProvenanceIndex in a CommonTableExpr.
-Other trouble spots: operator_predicate_proof, make_partition_op_expr,
-match_clause_to_partition_key, build_bound_expr (range types).
+build_implied_join_equality lack proper handling. Other trouble spots:
+operator_predicate_proof, make_partition_op_expr, match_clause_to_partition_key,
+build_bound_expr (range types).
 
 DistinctExpr, NullIfExpr: These are variants of OpExpr that are often created
 by creating OpExpr and setting the tag. There is one direct makeNode(DistinctExpr)
 which is already handled.
 
 ScalarArrayOpExpr: make_partition_op_expr is a problem here just as it is for
-OpExpr, and rewriteSearchAndCycle is a problem here just as it is for OpExpr
-and FuncExpr.
+OpExpr.
 
 CoerceViaIO: build_coercion_expression needs work here just as it does for
 FuncExpr, and get_cast_hashentry also needs work.

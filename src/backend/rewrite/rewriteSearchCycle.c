@@ -177,7 +177,8 @@ make_path_initial_array(RowExpr *rowexpr)
  * where the varattno of cpa is provided as path_varattno.
  */
 static Expr *
-make_path_cat_expr(RowExpr *rowexpr, AttrNumber path_varattno)
+make_path_cat_expr(RowExpr *rowexpr, AttrNumber path_varattno,
+				   ProvenanceIndex pidx)
 {
 	ArrayExpr  *arr;
 	FuncExpr   *fexpr;
@@ -188,15 +189,10 @@ make_path_cat_expr(RowExpr *rowexpr, AttrNumber path_varattno)
 	arr->location = -1;
 	arr->elements = list_make1(rowexpr);
 
-	/*
-	 * PROVENANCE-TODO: I suspect CommonTableExpr should carry a
-	 * ProvenanceIndex that is used here. Otherwise, how do we handle the
-	 * situation where rewriting introduces new CTEs?
-	 */
 	fexpr = makeFuncExpr(F_ARRAY_CAT, RECORDARRAYOID,
 						 list_make2(makeVar(1, path_varattno, RECORDARRAYOID, -1, 0, 0),
 									arr),
-						 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL, 0);
+						 InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL, pidx);
 
 	return (Expr *) fexpr;
 }
@@ -481,7 +477,7 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 							 (Expr *) cte->cycle_clause->cycle_mark_value,
 							 InvalidOid,
 							 cte->cycle_clause->cycle_mark_collation,
-							 0);	/* PROVENANCE-TODO */
+							 cte->pidx);
 
 		newq2->jointree = makeFromExpr(list_make1(rtr), (Node *) expr);
 	}
@@ -527,13 +523,9 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 			fs->resulttype = INT8OID;
 			fs->resulttypmod = -1;
 
-			/*
-			 * PROVENANCE-TODO: As with the other makeFuncExpr() call in this
-			 * file, I suspect CommonTableExpr should carry a ProvenanceIndex.
-			 */
 			fexpr = makeFuncExpr(F_INT8INC, INT8OID, list_make1(fs),
 								 InvalidOid, InvalidOid,
-								 COERCE_EXPLICIT_CALL, 0);
+								 COERCE_EXPLICIT_CALL, cte->pidx);
 
 			linitial(search_col_rowexpr->args) = fexpr;
 
@@ -544,7 +536,8 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 			/*
 			 * sqc || ARRAY[ROW(cols)]
 			 */
-			texpr = make_path_cat_expr(search_col_rowexpr, sqc_attno);
+			texpr = make_path_cat_expr(search_col_rowexpr, sqc_attno,
+									   cte->pidx);
 		}
 		tle = makeTargetEntry(texpr,
 							  list_length(newq2->targetList) + 1,
@@ -558,6 +551,7 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 		ScalarArrayOpExpr *saoe;
 		CaseExpr   *caseexpr;
 		CaseWhen   *casewhen;
+		Expr	   *texpr;
 
 		/*
 		 * CASE WHEN ROW(cols) = ANY (ARRAY[cpa]) THEN cmv ELSE cmd END
@@ -569,7 +563,7 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 		saoe->useOr = true;
 		saoe->args = list_make2(cycle_col_rowexpr,
 								makeVar(1, cpa_attno, RECORDARRAYOID, -1, 0, 0));
-		saoe->pidx = 0;			/* PROVENANCE-TODO: proper index */
+		saoe->pidx = cte->pidx;
 
 		caseexpr = makeNode(CaseExpr);
 		caseexpr->location = -1;
@@ -591,7 +585,8 @@ rewriteSearchAndCycle(CommonTableExpr *cte)
 		/*
 		 * cpa || ARRAY[ROW(cols)]
 		 */
-		tle = makeTargetEntry(make_path_cat_expr(cycle_col_rowexpr, cpa_attno),
+		texpr = make_path_cat_expr(cycle_col_rowexpr, cpa_attno, cte->pidx);
+		tle = makeTargetEntry(texpr,
 							  list_length(newq2->targetList) + 1,
 							  cte->cycle_clause->cycle_path_column,
 							  false);

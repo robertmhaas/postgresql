@@ -13855,6 +13855,7 @@ common_table_expr:  name opt_name_list AS opt_materialized '(' PreparableStmt ')
 				n->ctequery = $6;
 				n->search_clause = castNode(CTESearchClause, $8);
 				n->cycle_clause = castNode(CTECycleClause, $9);
+				n->pidx = 0;		/* direct parser input */
 				n->location = @1;
 				$$ = (Node *) n;
 			}
@@ -20898,6 +20899,12 @@ makeRecursiveViewSelect(char *relname, List *aliases, Node *query)
 	cte->ctematerialized = CTEMaterializeDefault;
 	cte->ctequery = query;
 	cte->location = -1;
+
+	/*
+	 * This is treated as a direct parser input, since no catalog lookup drives
+	 * the decision to create a CommonTableExpr.
+	 */
+	cte->pidx = 0;
 
 	/* create WITH clause and attach CTE */
 	w->recursive = true;

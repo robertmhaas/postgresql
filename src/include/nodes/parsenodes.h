@@ -1818,6 +1818,7 @@ typedef struct CommonTableExpr
 	Node	   *ctequery;		/* the CTE's subquery */
 	CTESearchClause *search_clause pg_node_attr(query_jumble_ignore);
 	CTECycleClause *cycle_clause pg_node_attr(query_jumble_ignore);
+	ProvenanceIndex pidx pg_node_attr(equal_ignore, query_jumble_ignore);
 	ParseLoc	location;		/* token location, or -1 if unknown */
 	/* These fields are set during parse analysis: */
 	/* is this CTE actually recursive? */
