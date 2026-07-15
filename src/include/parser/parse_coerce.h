@@ -100,8 +100,12 @@ extern char *check_valid_internal_signature(Oid ret_type,
 extern CoercionPathType find_coercion_pathway(Oid targetTypeId,
 											  Oid sourceTypeId,
 											  CoercionContext ccontext,
-											  Oid *funcid);
+											  Oid *funcid,
+											  Provenances *provenances,
+											  ProvenanceIndex *pidx);
 extern CoercionPathType find_typmod_coercion_function(Oid typeId,
-													  Oid *funcid);
+													  Oid *funcid,
+													  Provenances *provenances,
+													  ProvenanceIndex *pidx);
 
 #endif							/* PARSE_COERCE_H */

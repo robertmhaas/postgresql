@@ -6042,9 +6042,14 @@ json_categorize_type(Oid typoid, bool is_jsonb,
 					Oid			castfunc;
 					CoercionPathType ctype;
 
+					/*
+					 * PROVENANCE-TODO: This should pass provenances and use
+					 * the results, but the JSON refactoring patches I wrote
+					 * need to be committed for that to be practical.
+					 */
 					ctype = find_coercion_pathway(JSONOID, typoid,
 												  COERCION_EXPLICIT,
-												  &castfunc);
+												  &castfunc, NULL, NULL);
 					if (ctype == COERCION_PATH_FUNC && OidIsValid(castfunc))
 					{
 						*outfuncoid = castfunc;

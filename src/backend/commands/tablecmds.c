@@ -14099,7 +14099,7 @@ findFkeyCast(Oid targetTypeId, Oid sourceTypeId, Oid *funcid)
 	else
 	{
 		ret = find_coercion_pathway(targetTypeId, sourceTypeId,
-									COERCION_IMPLICIT, funcid);
+									COERCION_IMPLICIT, funcid, NULL, NULL);
 		if (ret == COERCION_PATH_NONE)
 			/* A previously-relied-upon cast is now gone. */
 			elog(ERROR, "could not find cast from %u to %u",

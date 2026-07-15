@@ -4145,7 +4145,7 @@ ri_HashCompareOp(Oid eq_opr, Oid typeid)
 		{
 			pathtype = find_coercion_pathway(lefttype, typeid,
 											 COERCION_IMPLICIT,
-											 &castfunc);
+											 &castfunc, NULL, NULL);
 			if (pathtype != COERCION_PATH_FUNC &&
 				pathtype != COERCION_PATH_RELABELTYPE)
 			{

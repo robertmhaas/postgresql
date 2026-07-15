@@ -44,7 +44,7 @@ static Node *build_coercion_expression(ParseState *pstate, Node *node,
 									   Oid funcId,
 									   Oid targetTypeId, int32 targetTypMod,
 									   CoercionContext ccontext, CoercionForm cformat,
-									   int location);
+									   ProvenanceIndex pidx, int location);
 static Node *coerce_record_to_complex(ParseState *pstate, Node *node,
 									  Oid targetTypeId,
 									  CoercionContext ccontext,
@@ -163,6 +163,7 @@ coerce_type(ParseState *pstate, Node *node,
 	Node	   *result;
 	CoercionPathType pathtype;
 	Oid			funcId;
+	ProvenanceIndex pidx = 0;	/* initially, a direct parser input */
 
 	Assert(pstate->p_provenances != NULL);
 
@@ -415,7 +416,7 @@ coerce_type(ParseState *pstate, Node *node,
 		return result;
 	}
 	pathtype = find_coercion_pathway(targetTypeId, inputTypeId, ccontext,
-									 &funcId);
+									 &funcId, pstate->p_provenances, &pidx);
 	if (pathtype != COERCION_PATH_NONE)
 	{
 		Oid			baseTypeId;
@@ -435,7 +436,7 @@ coerce_type(ParseState *pstate, Node *node,
 			 */
 			result = build_coercion_expression(pstate, node, pathtype, funcId,
 											   baseTypeId, baseTypeMod,
-											   ccontext, cformat, location);
+											   ccontext, cformat, pidx, location);
 
 			/*
 			 * If domain, coerce to the domain type and relabel with domain
@@ -601,7 +602,7 @@ can_coerce_type(int nargs, const Oid *input_typeids, const Oid *target_typeids,
 		 * both binary-compatible and coercion-function cases.
 		 */
 		pathtype = find_coercion_pathway(targetTypeId, inputTypeId, ccontext,
-										 &funcId);
+										 &funcId, NULL, NULL);
 		if (pathtype != COERCION_PATH_NONE)
 			continue;
 
@@ -763,6 +764,9 @@ coerce_type_typmod(ParseState *pstate, Node *node,
 {
 	CoercionPathType pathtype;
 	Oid			funcId;
+	ProvenanceIndex pidx = 0;	/* initially, a direct parser input */
+
+	Assert(pstate->p_provenances != NULL);
 
 	/* Skip coercion if already done */
 	if (targetTypMod == exprTypmod(node))
@@ -780,13 +784,15 @@ coerce_type_typmod(ParseState *pstate, Node *node,
 	if (targetTypMod < 0)
 		pathtype = COERCION_PATH_NONE;
 	else
-		pathtype = find_typmod_coercion_function(targetTypeId, &funcId);
+		pathtype = find_typmod_coercion_function(targetTypeId, &funcId,
+												 pstate->p_provenances,
+												 &pidx);
 
 	if (pathtype != COERCION_PATH_NONE)
 	{
 		node = build_coercion_expression(pstate, node, pathtype, funcId,
 										 targetTypeId, targetTypMod,
-										 ccontext, cformat, location);
+										 ccontext, cformat, pidx, location);
 	}
 	else
 	{
@@ -847,7 +853,7 @@ build_coercion_expression(ParseState *pstate, Node *node,
 						  Oid funcId,
 						  Oid targetTypeId, int32 targetTypMod,
 						  CoercionContext ccontext, CoercionForm cformat,
-						  int location)
+						  ProvenanceIndex pidx, int location)
 {
 	int			nargs = 0;
 
@@ -918,12 +924,8 @@ build_coercion_expression(ParseState *pstate, Node *node,
 			args = lappend(args, cons);
 		}
 
-		/*
-		 * PROVENANCE-TODO: Caller needs to pass a ProvenanceIndex so we know what
-		 * to pass to makeFuncExpr here.
-		 */
 		fexpr = makeFuncExpr(funcId, targetTypeId, args,
-							 InvalidOid, InvalidOid, cformat, 0);
+							 InvalidOid, InvalidOid, cformat, pidx);
 		fexpr->location = location;
 		return (Node *) fexpr;
 	}
@@ -998,12 +1000,8 @@ build_coercion_expression(ParseState *pstate, Node *node,
 		iocoerce->resulttype = targetTypeId;
 		/* resultcollid will be set by parse_collate.c */
 		iocoerce->coerceformat = cformat;
+		iocoerce->pidx = pidx;
 		iocoerce->location = location;
-
-		/*
-		 * PROVENANCE-TODO: Caller needs to pass a ProvenanceIndex so we know how
-		 * to set iocoerce->pidx
-		 */
 
 		return (Node *) iocoerce;
 	}
@@ -3176,11 +3174,18 @@ IsBinaryCoercibleWithCast(Oid srctype, Oid targettype,
  * needed to do the coercion; if the target is a domain then we may need to
  * apply domain constraint checking.  If you want to check for a zero-effort
  * conversion then use IsBinaryCoercible().
+ *
+ * If provenances is not NULL, then *pidx expected to be a valid provenance
+ * index. If the result is COERCION_PATH_FUNC or COERCION_PATH_COERCEVIAIO,
+ * the provenances chain rooted at *pidx will be extended with the catalog
+ * entries consulted here and the resulting provenance index will be stored
+ * back into *pidx, which therefore functions as an in/out parameter.
  */
 CoercionPathType
 find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
 					  CoercionContext ccontext,
-					  Oid *funcid)
+					  Oid *funcid,
+					  Provenances *provenances, ProvenanceIndex *pidx)
 {
 	CoercionPathType result = COERCION_PATH_NONE;
 	HeapTuple	tuple;
@@ -3206,6 +3211,7 @@ find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
 	{
 		Form_pg_cast castForm = (Form_pg_cast) GETSTRUCT(tuple);
 		CoercionContext castcontext;
+		Oid			castOid = castForm->oid;
 
 		/* convert char value for castcontext to CoercionContext enum */
 		switch (castForm->castcontext)
@@ -3249,6 +3255,21 @@ find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
 		}
 
 		ReleaseSysCache(tuple);
+
+		/*
+		 * For provenance purposes, attribute the choice to use FuncExpr or
+		 * CoerceViaIO to this pg_cast entry.
+		 */
+		if (provenances != NULL && (result == COERCION_PATH_FUNC ||
+									result == COERCION_PATH_COERCEVIAIO))
+		{
+			Assert(pidx != NULL);
+
+			*pidx = ProvenanceForCast(provenances, castOid,
+									  get_typowner(sourceTypeId),
+									  get_typowner(targetTypeId),
+									  *pidx);
+		}
 	}
 	else
 	{
@@ -3278,7 +3299,8 @@ find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
 				elempathtype = find_coercion_pathway(targetElem,
 													 sourceElem,
 													 ccontext,
-													 &elemfuncid);
+													 &elemfuncid,
+													 NULL, NULL);
 				if (elempathtype != COERCION_PATH_NONE)
 				{
 					result = COERCION_PATH_ARRAYCOERCE;
@@ -3298,12 +3320,32 @@ find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
 		 */
 		if (result == COERCION_PATH_NONE)
 		{
+			Oid			provenanceTypeId = InvalidOid;
+
 			if (ccontext >= COERCION_ASSIGNMENT &&
 				TypeCategory(targetTypeId) == TYPCATEGORY_STRING)
-				result = COERCION_PATH_COERCEVIAIO;
+				provenanceTypeId = targetTypeId;
 			else if (ccontext >= COERCION_EXPLICIT &&
 					 TypeCategory(sourceTypeId) == TYPCATEGORY_STRING)
+				provenanceTypeId = sourceTypeId;
+
+			if (OidIsValid(provenanceTypeId))
+			{
 				result = COERCION_PATH_COERCEVIAIO;
+
+				/*
+				 * For provenance purposes, attribute the choice to use
+				 * CoerceViaIO to the type whose typcategory is
+				 * TYPCATEGORY_STRING.
+				 *
+				 * PROVENANCE-TODO: TypeCategory() should hand back the
+				 * typowner to avoid an extra syscache lookup.
+				 */
+				if (provenances != NULL)
+					*pidx = ProvenanceForType(provenances, provenanceTypeId,
+											  get_typowner(provenanceTypeId),
+											  *pidx);
+			}
 		}
 	}
 
@@ -3339,15 +3381,23 @@ find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
  *	COERCION_PATH_NONE: no length coercion needed
  *	COERCION_PATH_FUNC: apply the function returned in *funcid
  *	COERCION_PATH_ARRAYCOERCE: apply the function using ArrayCoerceExpr
+ *
+ * If provenances is not NULL, then *pidx expected to be a valid provenance
+ * index. If the result is COERCION_PATH_FUNC, any cast we find here will be
+ * added to the provenances chain rooted at *pidx and the resulting provenance
+ * index will be stored back into *pidx, which therefore functions as an in/out
+ * parameter. (This function would also need to update *pidx if it ever
+ * returned COERCION_PATH_COERCEVIAIO, but it doesn't.)
  */
 CoercionPathType
-find_typmod_coercion_function(Oid typeId,
-							  Oid *funcid)
+find_typmod_coercion_function(Oid typeId, Oid *funcid,
+							  Provenances *provenances, ProvenanceIndex *pidx)
 {
 	CoercionPathType result;
 	Type		targetType;
 	Form_pg_type typeForm;
 	HeapTuple	tuple;
+	Oid			castOid = InvalidOid;
 
 	*funcid = InvalidOid;
 	result = COERCION_PATH_FUNC;
@@ -3373,12 +3423,27 @@ find_typmod_coercion_function(Oid typeId,
 	{
 		Form_pg_cast castForm = (Form_pg_cast) GETSTRUCT(tuple);
 
+		castOid = castForm->oid;
 		*funcid = castForm->castfunc;
 		ReleaseSysCache(tuple);
 	}
 
 	if (!OidIsValid(*funcid))
 		result = COERCION_PATH_NONE;
+
+	/*
+	 * It may look odd that we only do this for COERCION_PATH_FUNC and not
+	 * COERCION_PATH_ARRAYCOERCE, but *funcid is never used for anything in
+	 * the latter case. (Perhaps we shouldn't be setting it, then?)
+	 */
+	if (provenances != NULL && result == COERCION_PATH_FUNC)
+	{
+		Oid			typowner = get_typowner(typeId);
+
+		Assert(pidx != NULL);
+		*pidx = ProvenanceForCast(provenances, castOid,
+								  typowner, typowner, *pidx);
+	}
 
 	return result;
 }

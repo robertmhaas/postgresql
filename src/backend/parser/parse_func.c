@@ -1627,9 +1627,14 @@ func_get_detail(List *funcname,
 					CoercionPathType cpathtype;
 					Oid			cfuncid;
 
+					/*
+					 * PROVENANCE-TODO: this should pass provenances, and the
+					 * result should be exfiltrated to our caller
+					 */
 					cpathtype = find_coercion_pathway(targetType, sourceType,
 													  COERCION_EXPLICIT,
-													  &cfuncid);
+													  &cfuncid,
+													  NULL, NULL);
 					switch (cpathtype)
 					{
 						case COERCION_PATH_RELABELTYPE:
