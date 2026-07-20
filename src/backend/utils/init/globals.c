@@ -83,12 +83,6 @@ char		OutputFileName[MAXPGPATH];	/* debugging output file */
 char		my_exec_path[MAXPGPATH];	/* full path to my executable */
 char		pkglib_path[MAXPGPATH]; /* full path to lib directory */
 
-#ifdef EXEC_BACKEND
-char		postgres_exec_path[MAXPGPATH];	/* full path to backend */
-
-/* note: currently this is not valid in backend processes */
-#endif
-
 ProcNumber	MyProcNumber = INVALID_PROC_NUMBER;
 
 ProcNumber	ParallelLeaderProcNumber = INVALID_PROC_NUMBER;

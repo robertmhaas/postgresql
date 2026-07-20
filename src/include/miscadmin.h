@@ -203,10 +203,6 @@ extern PGDLLIMPORT char OutputFileName[];
 extern PGDLLIMPORT char my_exec_path[];
 extern PGDLLIMPORT char pkglib_path[];
 
-#ifdef EXEC_BACKEND
-extern PGDLLIMPORT char postgres_exec_path[];
-#endif
-
 extern PGDLLIMPORT Oid MyDatabaseId;
 
 extern PGDLLIMPORT Oid MyDatabaseTableSpace;

@@ -367,11 +367,11 @@ internal_forkexec(BackendType child_kind, int child_slot,
 	/* Fire off execv in child */
 	if ((pid = fork_process()) == 0)
 	{
-		if (execv(postgres_exec_path, argv) < 0)
+		if (execv(my_exec_path, argv) < 0)
 		{
 			ereport(LOG,
 					(errmsg("could not execute server process \"%s\": %m",
-							postgres_exec_path)));
+							my_exec_path)));
 			/* We're already in the child process here, can't return */
 			exit(1);
 		}
@@ -445,7 +445,7 @@ retry:
 	sprintf(paramHandleStr, "%lu", (DWORD) paramHandle);
 #endif
 	l = snprintf(cmdLine, sizeof(cmdLine) - 1, "\"%s\" --forkchild=%d %s",
-				 postgres_exec_path, (int) child_kind, paramHandleStr);
+				 my_exec_path, (int) child_kind, paramHandleStr);
 	if (l >= sizeof(cmdLine))
 	{
 		ereport(LOG,
