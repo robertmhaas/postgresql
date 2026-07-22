@@ -972,7 +972,7 @@ precheck_tar_backup_file(verifier_context *context, char *relpath,
 	}
 
 	/* Now, check the compression type of the tar */
-	if (!parse_tar_compress_algorithm(suffix, &compress_algorithm))
+	if (parse_tar_compress_algorithm(suffix, &compress_algorithm) != 0)
 	{
 		report_backup_error(context,
 							"file \"%s\" is not expected in a tar format backup",
